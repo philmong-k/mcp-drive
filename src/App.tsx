@@ -3,7 +3,7 @@ import {
   Bot, Terminal, Radio, Globe, FolderCode, Layers, Cpu, Compass, HardDrive, 
   Send, Sparkles, Smile, MessageSquare, Volume2, Mic, MicOff, Settings, 
   HelpCircle, RefreshCw, AlertTriangle, ShieldCheck, CheckCircle2, ChevronRight,
-  Database
+  Database, LogOut, Upload, Download, Cloud
 } from "lucide-react";
 
 import { 
@@ -16,6 +16,11 @@ import DNSTology from "./components/DNSTology";
 import MCPServerManager from "./components/MCPServerManager";
 import ProviderSettings from "./components/ProviderSettings";
 import AIWorkspaceGenerator from "./components/AIWorkspaceGenerator";
+
+import { initAuth, googleSignIn, googleSignOut, getAccessToken } from "./utils/googleAuth";
+import { findDriveBackupFile, downloadDriveBackupFile, uploadDriveBackupFile } from "./utils/googleDrive";
+import { saveWorkspaceLocal, loadWorkspaceLocal, saveSnapshotsLocal, loadSnapshotsLocal } from "./utils/indexedDB";
+import { User } from "firebase/auth";
 
 export default function App() {
   // Navigation Tabs State
@@ -482,6 +487,14 @@ export default function App() {
   const [isSyncingToServer, setIsSyncingToServer] = useState(false);
   const [isSyncingFromServer, setIsSyncingFromServer] = useState(false);
 
+  // Local IndexedDB & Google Drive state variables
+  const [isDbLoaded, setIsDbLoaded] = useState(false);
+  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const [googleToken, setGoogleToken] = useState<string | null>(null);
+  const [isLoggingIn, setIsLoggingIn] = useState(false);
+  const [isSyncingDrive, setIsSyncingDrive] = useState(false);
+  const [dismissGate, setDismissGate] = useState(false);
+
   // Multi-session historical snapshots list state
   const [snapshots, setSnapshots] = useState<any[]>([]);
   const [newSnapTitle, setNewSnapTitle] = useState("");
@@ -492,15 +505,13 @@ export default function App() {
   const [editSnapTitleName, setEditSnapTitleName] = useState("");
   const [searchSnapshotKeyword, setSearchSnapshotKeyword] = useState("");
 
+  // 1. Fetch current snapshots with local IndexedDB
   const fetchSnapshots = async () => {
     try {
-      const resp = await fetch("/api/snapshots");
-      if (resp.ok) {
-        const data = await resp.json();
-        setSnapshots(data || []);
-      }
+      const data = await loadSnapshotsLocal();
+      setSnapshots(data || []);
     } catch (err) {
-      console.error("Failed to fetch custom snapshots:", err);
+      console.error("Failed to fetch snapshots from IDB:", err);
     }
   };
 
@@ -531,12 +542,13 @@ export default function App() {
     };
   };
 
+  // 2. Create local snapshot in client IndexedDB
   const handleCreateSnapshot = async () => {
     if (isCreatingSnapshot) return;
     setIsCreatingSnapshot(true);
     
     const titleText = newSnapTitle.trim() || `${new Date().toLocaleTimeString()} 작업 체크포인트`;
-    logToTerminal(`[스냅샷 생성] 📸 제목: "${titleText}" 로 백업 진행 중...`, "info");
+    logToTerminal(`[스냅샷 생성] 📸 제목: "${titleText}" 로 로컬 IndexedDB 백업 진행 중...`, "info");
 
     const newSnap = {
       id: "snap_" + Date.now(),
@@ -547,25 +559,19 @@ export default function App() {
     };
 
     try {
-      const resp = await fetch("/api/snapshots", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newSnap)
-      });
-      if (resp.ok) {
-        logToTerminal(`[스냅샷 디렉터리 연동] 📸 성공적으로 새로운 스냅샷 시점 ("${titleText}")을 클라우드 서버에 안전 보존했습니다!`, "success");
-        setNewSnapTitle("");
-        await fetchSnapshots();
-      } else {
-        throw new Error();
-      }
+      const currentSnaps = [newSnap, ...snapshots];
+      await saveSnapshotsLocal(currentSnaps);
+      setSnapshots(currentSnaps);
+      logToTerminal(`[스냅샷 로컬 저장] 📸 성공적으로 새로운 스냅샷 시점 ("${titleText}")을 브라우저의 안전한 IndexedDB에 보존했습니다!`, "success");
+      setNewSnapTitle("");
     } catch {
-      logToTerminal("[스냅샷 생성 오류] 원격 서버 백업 드라이브에 쓰지 못했습니다.", "error");
+      logToTerminal("[스냅샷 생성 오류] 로컬 IndexedDB 백업 쓰기 실피", "error");
     } finally {
       setIsCreatingSnapshot(false);
     }
   };
 
+  // 3. Overwrite local snapshot
   const handleOverwriteSnapshot = async (id: string, titleText: string) => {
     if (!window.confirm(`"${titleText}" 스냅샷의 데이터를 현재의 라이브 작업대 상태로 덮어쓰시겠습니까? (백업본이 현시점으로 업데이트됩니다)`)) {
       return;
@@ -573,49 +579,49 @@ export default function App() {
     logToTerminal(`[스냅샷 덮어쓰기] 🔄 "${titleText}" 스냅샷의 페이로드를 현재 시점으로 업데이트 중...`, "info");
 
     try {
-      const resp = await fetch(`/api/snapshots/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          payload: currentWorkspaceSnapshotPayload()
-        })
+      const updatedSnaps = snapshots.map((s: any) => {
+        if (s.id === id) {
+          return {
+            ...s,
+            timestamp: new Date().toISOString(),
+            payload: currentWorkspaceSnapshotPayload()
+          };
+        }
+        return s;
       });
-      if (resp.ok) {
-        logToTerminal(`[스냅샷 업데이트] 🔄 "${titleText}" 스냅샷의 데이터와 타임스탬프를 현 작업 상태로 완벽히 덮어썼습니다!`, "success");
-        await fetchSnapshots();
-      } else {
-        throw new Error();
-      }
+      await saveSnapshotsLocal(updatedSnaps);
+      setSnapshots(updatedSnaps);
+      logToTerminal(`[스냅샷 업데이트] 🔄 "${titleText}" 스냅샷의 데이터와 타임스탬프를 현 작업 상태로 완벽히 덮어썼습니다!`, "success");
     } catch {
-      logToTerminal("[스냅샷 업데이트 오류] 원격 서버와의 실시간 데이터 쓰기 교신 실패", "error");
+      logToTerminal("[스냅샷 업데이트 오류] 로컬 IndexedDB 스토리지 쓰기 실패", "error");
     }
   };
 
+  // 4. Rename local snapshot
   const handleSaveRenameSnapshot = async (id: string) => {
     const trimmedTitle = editSnapTitleName.trim();
     if (!trimmedTitle) return;
 
     try {
-      const resp = await fetch(`/api/snapshots/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: trimmedTitle })
+      const updatedSnaps = snapshots.map((s: any) => {
+        if (s.id === id) {
+          return { ...s, title: trimmedTitle };
+        }
+        return s;
       });
-      if (resp.ok) {
-        logToTerminal(`[스냅샷 메타데이터] ✏️ 스냅샷 이름이 "${trimmedTitle}" 로 변경되었습니다.`, "success");
-        setEditingSnapId(null);
-        await fetchSnapshots();
-      } else {
-        throw new Error();
-      }
+      await saveSnapshotsLocal(updatedSnaps);
+      setSnapshots(updatedSnaps);
+      logToTerminal(`[스냅샷 메타데이터] ✏️ 스냅샷 이름이 "${trimmedTitle}" 로 변경되었습니다.`, "success");
+      setEditingSnapId(null);
     } catch {
-      logToTerminal("[이름 변경 실패] 서버 통신 중 오류가 발생했습니다.", "error");
+      logToTerminal("[이름 변경 실패] 로컬 IndexedDB 스토리지 오류", "error");
     }
   };
 
+  // 5. Restore local snapshot
   const handleRestoreSnapshot = (snap: any) => {
     if (!snap || !snap.payload) {
-      logToTerminal("[스냅샷 복구 실패] 클라우드 데이터셋 유실 상태", "error");
+      logToTerminal("[스냅샷 복구 실패] 데이터셋 유실 상태", "error");
       return;
     }
 
@@ -640,109 +646,227 @@ export default function App() {
     }
   };
 
+  // 6. Delete local snapshot
   const handleDeleteSnapshot = async (id: string, titleText: string) => {
     try {
-      const resp = await fetch(`/api/snapshots/${id}`, {
-        method: "DELETE"
-      });
-      if (resp.ok) {
-        logToTerminal(`[스냅샷 영구삭제] 🗑️ "${titleText}" 백업 카드를 정상 제거했습니다.`, "warn");
-        await fetchSnapshots();
-      } else {
-        throw new Error();
-      }
+      const updatedSnaps = snapshots.filter((s: any) => s.id !== id);
+      await saveSnapshotsLocal(updatedSnaps);
+      setSnapshots(updatedSnaps);
+      logToTerminal(`[스냅샷 영구삭제] 🗑️ "${titleText}" 백업 카드를 정상 제거했습니다.`, "warn");
     } catch {
-      logToTerminal("[스냅샷 제거 실패] 일시적인 삭제 동기화 지연 발생", "error");
+      logToTerminal("[스냅샷 제거 실패] 로컬 IndexedDB 스토리지 오류", "error");
     }
   };
 
-  const handleSaveToCloud = async (silent = false) => {
-    setIsSyncingToServer(true);
-    if (!silent) logToTerminal("[클라우드 동기화] ☁️ 현재 파일트리 및 데이터베이스 연결 자격증명을 서버 관제탑에 업로드 백업 중...", "info");
-
-    const syncPayload = {
-      linuxFiles,
-      windowsFiles,
-      domains,
-      resources,
-      mcpServers,
-      chatMessages,
-      llmConfig,
-      credentials: {
-        ssh_host: localStorage.getItem("ssh_host"),
-        ssh_port: localStorage.getItem("ssh_port"),
-        ssh_user: localStorage.getItem("ssh_user"),
-        ssh_pass: localStorage.getItem("ssh_pass"),
-        db_type: localStorage.getItem("db_type"),
-        db_host: localStorage.getItem("db_host"),
-        db_port: localStorage.getItem("db_port"),
-        db_user: localStorage.getItem("db_user"),
-        db_pass: localStorage.getItem("db_pass"),
-        db_name: localStorage.getItem("db_name"),
-        docker_tag: localStorage.getItem("docker_tag"),
-        tailscale_ip: localStorage.getItem("tailscale_ip"),
-        cf_api_token: localStorage.getItem("cf_api_token")
+  // 7. Google Drive Sync and Authentication management handlers
+  const handleGoogleLogin = async () => {
+    setIsLoggingIn(true);
+    logToTerminal("[구글 드라이브 연동] ☁️ 구글 계정 인증 팝업을 호출하는 중...", "info");
+    try {
+      const result = await googleSignIn();
+      if (result) {
+        setGoogleUser(result.user);
+        setGoogleToken(result.accessToken);
+        logToTerminal(`[구글 인증 완료] 👤 "${result.user.email}" 계정으로 로그인했습니다. 구글 드라이브 동기화를 시작합니다.`, "success");
+        await handlePullFromGoogleDrive(result.accessToken);
       }
+    } catch (err) {
+      console.error("Google sync login error:", err);
+      logToTerminal("[구글 인증 실패] 연동 승인이 거부되었거나 네트워크 차단이 감지되었습니다.", "error");
+    } finally {
+      setIsLoggingIn(false);
+    }
+  };
+
+  const handleGoogleLogout = async () => {
+    logToTerminal("[구글 드라이브 해제] 연동을 해제합니다. 세션 자격 증명이 삭제됩니다.", "warn");
+    try {
+      await googleSignOut();
+      setGoogleUser(null);
+      setGoogleToken(null);
+    } catch (err) {
+      console.error("Logout failed:", err);
+    }
+  };
+
+  const handlePushToGoogleDrive = async () => {
+    const token = googleToken || getAccessToken();
+    if (!token) {
+      logToTerminal("[구글 드라이브 동기화] ❌ 로그인되지 않은 상태입니다. 먼저 구글 인증을 완료해 주세요.", "error");
+      return;
+    }
+
+    setIsSyncingDrive(true);
+    logToTerminal("[구글 드라이브 백업] 📤 현재의 모든 파일트리, 도메인, 인프라 크레덴셜, 그리고 스냅샷 타임라인을 병합하여 구글 드라이브로 아웃풋 백업 중...", "info");
+
+    const payload = {
+      workspace: {
+        linuxFiles,
+        windowsFiles,
+        domains,
+        resources,
+        mcpServers,
+        chatMessages,
+        llmConfig,
+        credentials: {
+          ssh_host: localStorage.getItem("ssh_host"),
+          ssh_port: localStorage.getItem("ssh_port"),
+          ssh_user: localStorage.getItem("ssh_user"),
+          ssh_pass: localStorage.getItem("ssh_pass"),
+          db_type: localStorage.getItem("db_type"),
+          db_host: localStorage.getItem("db_host"),
+          db_port: localStorage.getItem("db_port"),
+          db_user: localStorage.getItem("db_user"),
+          db_pass: localStorage.getItem("db_pass"),
+          db_name: localStorage.getItem("db_name"),
+          docker_tag: localStorage.getItem("docker_tag"),
+          tailscale_ip: localStorage.getItem("tailscale_ip"),
+          cf_api_token: localStorage.getItem("cf_api_token")
+        }
+      },
+      snapshots,
+      syncedAt: new Date().toISOString()
     };
 
     try {
-      const response = await fetch("/api/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(syncPayload)
-      });
-      if (response.ok) {
-        if (!silent) logToTerminal("[클라우드 동기화] ☁️ 업로드 성공! 모바일 또는 타 기기에서 '내려받기(동기화)' 단추를 눌러 즉시 작업을 이어갈 수 있습니다.", "success");
-      } else {
-        throw new Error();
-      }
-    } catch {
-      if (!silent) logToTerminal("[클라우드 동기화] 업로드 중 서버 장애 또는 일시적 통신 전력 손실이 감지되었습니다.", "error");
+      const fileId = await findDriveBackupFile(token);
+      await uploadDriveBackupFile(token, payload, fileId);
+      logToTerminal("[구글 드라이브 백업 완료] 📤 'mcp-drive-backup.json' 파일로 구글 드라이브에 안전하게 수동 백업이 저장되었습니다!", "success");
+    } catch (err) {
+      logToTerminal("[구글 드라이브 백업 오류] 업로드 중 통신 지연 혹은 토큰 만료가 감지되었습니다. 로그인을 다시 시도해주세요.", "error");
     } finally {
-      setIsSyncingToServer(false);
+      setIsSyncingDrive(false);
     }
   };
 
-  const handleLoadFromCloud = async (silent = false) => {
-    setIsSyncingFromServer(true);
-    if (!silent) logToTerminal("[클라우드 동기화] ☁️ 클라우드 서버에서 최신 작업대 스냅샷을 수신하는 중...", "info");
+  const handlePullFromGoogleDrive = async (activeTkn?: string) => {
+    const token = activeTkn || googleToken || getAccessToken();
+    if (!token) return;
+
+    setIsSyncingDrive(true);
+    logToTerminal("[구글 드라이브 동기화] 🔍 구글 드라이브에서 'mcp-drive-backup.json' 클라우드 백업을 검색 중...", "info");
 
     try {
-      const response = await fetch("/api/sync");
-      if (response.ok) {
-        const data = await response.json();
-        if (data && Object.keys(data).length > 0) {
-          if (data.linuxFiles) setLinuxFiles(data.linuxFiles);
-          if (data.windowsFiles) setWindowsFiles(data.windowsFiles);
-          if (data.domains) setDomains(data.domains);
-          if (data.resources) setResources(data.resources);
-          if (data.mcpServers) setMcpServers(data.mcpServers);
-          if (data.chatMessages) setChatMessages(data.chatMessages);
-          if (data.llmConfig) setLlmConfig(data.llmConfig);
+      const fileId = await findDriveBackupFile(token);
+      if (fileId) {
+        logToTerminal("[구글 드라이브 동기화] 📥 백업 데이터를 발견했습니다. 로컬 디바이스로 내려받는 중...", "info");
+        const driveData = await downloadDriveBackupFile(token, fileId);
+        
+        if (driveData) {
+          const { workspace, snapshots: driveSnaps } = driveData;
+          
+          if (workspace) {
+            if (workspace.linuxFiles) setLinuxFiles(workspace.linuxFiles);
+            if (workspace.windowsFiles) setWindowsFiles(workspace.windowsFiles);
+            if (workspace.domains) setDomains(workspace.domains);
+            if (workspace.resources) setResources(workspace.resources);
+            if (workspace.mcpServers) setMcpServers(workspace.mcpServers);
+            if (workspace.chatMessages) setChatMessages(workspace.chatMessages);
+            if (workspace.llmConfig) setLlmConfig(workspace.llmConfig);
+            if (workspace.credentials) {
+              Object.entries(workspace.credentials).forEach(([key, value]) => {
+                if (value) localStorage.setItem(key, value as string);
+              });
+            }
+            await saveWorkspaceLocal(workspace);
+          }
 
-          if (data.credentials) {
-            Object.entries(data.credentials).forEach(([key, value]) => {
+          if (driveSnaps) {
+            setSnapshots(driveSnaps);
+            await saveSnapshotsLocal(driveSnaps);
+          }
+
+          logToTerminal(`[구글 드라이브 연동 완료] 🎉 구글 드라이브에서 가져온 작업 설정과 ${driveSnaps?.length || 0}개의 타임라인 스냅샷이 로컬에 자동 동기화되었습니다! (동기화 시점: ${new Date(driveData.syncedAt).toLocaleString()})`, "success");
+        }
+      } else {
+        logToTerminal("[구글 드라이브 동기화] 🔍 신규 디바이스입니다. 아직 드라이브에 저장된 'mcp-drive-backup.json' 파일이 없습니다.", "info");
+      }
+    } catch (err) {
+      logToTerminal("[구글 드라이브 동기화 오류] 구글 드라이브로부터 백업을 가져오지 못했습니다.", "warn");
+    } finally {
+      setIsSyncingDrive(false);
+    }
+  };
+
+  // Real-time automatic workspace state synchronization to local IndexedDB
+  useEffect(() => {
+    if (isDbLoaded) {
+      const payload = {
+        linuxFiles,
+        windowsFiles,
+        domains,
+        resources,
+        mcpServers,
+        chatMessages,
+        llmConfig,
+        credentials: {
+          ssh_host: localStorage.getItem("ssh_host"),
+          ssh_port: localStorage.getItem("ssh_port"),
+          ssh_user: localStorage.getItem("ssh_user"),
+          ssh_pass: localStorage.getItem("ssh_pass"),
+          db_type: localStorage.getItem("db_type"),
+          db_host: localStorage.getItem("db_host"),
+          db_port: localStorage.getItem("db_port"),
+          db_user: localStorage.getItem("db_user"),
+          db_pass: localStorage.getItem("db_pass"),
+          db_name: localStorage.getItem("db_name"),
+          docker_tag: localStorage.getItem("docker_tag"),
+          tailscale_ip: localStorage.getItem("tailscale_ip"),
+          cf_api_token: localStorage.getItem("cf_api_token")
+        }
+      };
+      saveWorkspaceLocal(payload);
+    }
+  }, [linuxFiles, windowsFiles, domains, resources, mcpServers, chatMessages, llmConfig, isDbLoaded]);
+
+  // Load initial IndexedDB states and config google redirect/auth bindings on mount
+  useEffect(() => {
+    const loadFromIDB = async () => {
+      try {
+        const localWorkspace = await loadWorkspaceLocal();
+        if (localWorkspace) {
+          if (localWorkspace.linuxFiles) setLinuxFiles(localWorkspace.linuxFiles);
+          if (localWorkspace.windowsFiles) setWindowsFiles(localWorkspace.windowsFiles);
+          if (localWorkspace.domains) setDomains(localWorkspace.domains);
+          if (localWorkspace.resources) setResources(localWorkspace.resources);
+          if (localWorkspace.mcpServers) setMcpServers(localWorkspace.mcpServers);
+          if (localWorkspace.chatMessages) setChatMessages(localWorkspace.chatMessages);
+          if (localWorkspace.llmConfig) setLlmConfig(localWorkspace.llmConfig);
+          if (localWorkspace.credentials) {
+            Object.entries(localWorkspace.credentials).forEach(([key, value]) => {
               if (value) localStorage.setItem(key, value as string);
             });
           }
-          if (!silent) logToTerminal("[클라우드 동기화] ☁️ 동기화 성공! 타 기기와 소스파일, 도메인, 자격증명이 완전 동기화되었습니다.", "success");
+          logToTerminal("[로컬 저장소 활성화] 💾 안전한 클라이언트 브라우저 IndexedDB에서 이전 작업대의 상태를 성공적으로 로드했습니다.", "success");
         } else {
-          if (!silent) logToTerminal("[클라우드 동기화] 불러올 수 있는 클라우드 백업 흔적이 없습니다.", "warn");
+          logToTerminal("[로컬 저장소 활성화] 💾 신규 콕핏 브라우저 세션입니다. 기본 템플릿 파일셋으로 구축을 시작합니다.", "info");
         }
-      } else {
-        throw new Error();
-      }
-    } catch {
-      if (!silent) logToTerminal("[클라우드 동기화] 내려받기 데이터 연동 중 물리 지연이 감지되었습니다.", "warn");
-    } finally {
-      setIsSyncingFromServer(false);
-    }
-  };
 
-  // Perform automatic load sync on mount
-  useEffect(() => {
-    handleLoadFromCloud(true);
-    fetchSnapshots();
+        const localSnaps = await loadSnapshotsLocal();
+        setSnapshots(localSnaps || []);
+      } catch (err) {
+        console.error("IndexedDB bootstrap error:", err);
+      } finally {
+        setIsDbLoaded(true);
+      }
+    };
+
+    loadFromIDB();
+
+    // Google Auth observer setup
+    const unsubscribe = initAuth(
+      async (user, token) => {
+        setGoogleUser(user);
+        setGoogleToken(token);
+        await handlePullFromGoogleDrive(token);
+      },
+      () => {
+        setGoogleUser(null);
+        setGoogleToken(null);
+      }
+    );
+
+    return () => unsubscribe();
   }, []);
 
   return (
@@ -792,26 +916,29 @@ export default function App() {
           {/* Real-time PC/Mobile Server Cloud Sync Controllers (Direct user-intent solved) */}
           <div className="flex items-center gap-2 border-l border-slate-800 pl-4">
             <div className="hidden lg:flex items-center gap-1 text-[10px] font-mono text-slate-500">
-              <Globe size={11} className="text-emerald-500 animate-pulse" />
-              <span>실시간 클라우드 동기화:</span>
+              <Cloud size={11} className={googleUser ? "text-emerald-500 animate-pulse" : "text-slate-500"} />
+              <span>구글 드라이브 동기화:</span>
+              <span className={`text-[9px] font-mono font-bold ${googleUser ? "text-emerald-400" : "text-slate-500"}`}>
+                {googleUser ? "연동됨" : "미연동"}
+              </span>
             </div>
             <button
-              onClick={() => handleSaveToCloud(false)}
-              disabled={isSyncingToServer}
-              title="현재 작업 상태, 인프라 크레덴셜, 세션 파일을 클라우드 데이터베이스 서버에 즉시 보존합니다."
-              className="px-2.5 py-1 bg-blue-600/10 hover:bg-blue-600/20 active:bg-blue-600/35 border border-blue-500/25 text-blue-400 text-[10px] font-bold rounded-lg cursor-pointer transition flex items-center gap-1"
+              onClick={handlePushToGoogleDrive}
+              disabled={isSyncingDrive || !googleUser}
+              title={googleUser ? "현재 작업 상태, 인프라 크레덴셜, 세션 파일을 구글 드라이브에 즉시 보존합니다." : "구글 드라이브 연동 활성화 필요"}
+              className="px-2.5 py-1 bg-blue-600/10 hover:bg-blue-600/20 active:bg-blue-600/35 border border-blue-500/25 text-blue-400 text-[10px] font-bold rounded-lg cursor-pointer transition flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <RefreshCw size={11} className={isSyncingToServer ? "animate-spin" : ""} />
-              <span>백업 저장 (PC)</span>
+              <Upload size={11} className={isSyncingDrive ? "animate-spin" : ""} />
+              <span>Drive 백업</span>
             </button>
             <button
-              onClick={() => handleLoadFromCloud(false)}
-              disabled={isSyncingFromServer}
-              title="모바일 등 외부 기기에서 수정하고 업로드한 작업 설정과 파일 구성을 완벽히 당겨와 연동합니다."
-              className="px-2.5 py-1 bg-emerald-600/10 hover:bg-emerald-600/20 active:bg-emerald-600/35 border border-emerald-500/25 text-emerald-400 text-[10px] font-bold rounded-lg cursor-pointer transition flex items-center gap-1"
+              onClick={() => handlePullFromGoogleDrive()}
+              disabled={isSyncingDrive || !googleUser}
+              title={googleUser ? "모바일 등 외부 기기에서 구글 드라이브에 저장한 작업 설정과 파일 구성을 가져옵니다." : "구글 드라이브 연동 활성화 필요"}
+              className="px-2.5 py-1 bg-emerald-600/10 hover:bg-emerald-600/20 active:bg-emerald-600/35 border border-emerald-500/25 text-emerald-400 text-[10px] font-bold rounded-lg cursor-pointer transition flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              <Database size={11} className={isSyncingFromServer ? "animate-bounce" : ""} />
-              <span>이어받기 (모바일)</span>
+              <Download size={11} className={isSyncingDrive ? "animate-bounce" : ""} />
+              <span>Drive 가져오기</span>
             </button>
           </div>
         </div>
@@ -926,6 +1053,90 @@ export default function App() {
           <div className="bg-[#1A1A1F] p-4 rounded-2xl border border-slate-800 text-left text-xs text-slate-400 leading-relaxed font-sans mb-4">
             <strong className="text-slate-200 block mb-1">💡 원스톱 개발 환경 제어팁:</strong>
             자율 에이전트 챗 영역에서 텍스트 또는 마이크 버튼을 통해 듀얼 OS 파일들과 프록시 DNS 정보를 자동으로 편집할 수 있습니다. 
+          </div>
+
+          {/* Google Drive Secure Cloud Integration Hub */}
+          <div className="bg-[#141417]/80 rounded-2xl border border-slate-800 p-4 font-sans text-left mb-4 shadow-md">
+            <div className="flex items-center justify-between mb-2.5 pb-2 border-b border-slate-800/60">
+              <div className="flex items-center gap-1.5 text-xs font-bold text-white uppercase tracking-wide">
+                <Cloud size={14} className={googleUser ? "text-emerald-400" : "text-blue-400"} />
+                <span>Google Drive 동기화</span>
+              </div>
+              <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border leading-tight ${
+                googleUser 
+                  ? "bg-emerald-950/40 text-emerald-400 border-emerald-800/40" 
+                  : "bg-slate-900/60 text-slate-500 border-slate-800"
+              }`}>
+                {googleUser ? "연동 활성" : "미인증"}
+              </span>
+            </div>
+
+            {!googleUser ? (
+              <div className="space-y-3">
+                <p className="text-[10px] text-slate-500 leading-relaxed">
+                  인프라 정보 & 세션 스냅샷은 브라우저 <strong>IndexedDB</strong>에 로컬 저장되어 안전합니다. 구글 계정을 연동하면 클라우드 백업 및 타 장치간 자동 동기화가 활성화됩니다.
+                </p>
+                <button
+                  onClick={handleGoogleLogin}
+                  disabled={isLoggingIn}
+                  className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900/40 text-white font-semibold text-xs rounded-xl cursor-pointer transition flex items-center justify-center gap-2 shadow-lg shadow-blue-950/35"
+                >
+                  <Cloud size={14} className={isLoggingIn ? "animate-spin" : ""} />
+                  <span>{isLoggingIn ? "구글 계정 연동 중..." : "Google Drive 연동하기"}</span>
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {/* User info row */}
+                <div className="flex items-center justify-between bg-slate-950/45 border border-slate-800/60 rounded-xl p-2 min-w-0">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <img 
+                      src={googleUser.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${googleUser.email}`} 
+                      alt="Google User" 
+                      className="w-6 h-6 rounded-lg border border-slate-800 bg-slate-900 object-cover shrink-0"
+                      referrerPolicy="no-referrer"
+                    />
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-bold text-slate-200 truncate leading-tight">
+                        {googleUser.displayName || "Google 사용자"}
+                      </div>
+                      <div className="text-[8px] font-mono text-slate-500 truncate mt-0.5 leading-none">
+                        {googleUser.email}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    onClick={handleGoogleLogout}
+                    title="계정 연동 해제"
+                    className="p-1 px-1.5 text-[8.5px] font-medium text-slate-400 bg-slate-850 hover:bg-red-950/30 hover:border-red-800/20 hover:text-red-400 border border-slate-700/50 rounded-lg cursor-pointer transition flex items-center gap-1 font-sans shrink-0"
+                  >
+                    <LogOut size={10} />
+                    <span>해제</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={handlePushToGoogleDrive}
+                    disabled={isSyncingDrive}
+                    title="IndexedDB의 작업 데이터와 세션 타임라인을 구글 드라이브에 수동 업로드 보관합니다."
+                    className="py-1.5 px-2 bg-blue-600/15 hover:bg-blue-600/25 disabled:opacity-50 border border-blue-500/20 hover:border-blue-500/40 text-blue-400 font-bold text-[10px] rounded-lg cursor-pointer transition flex items-center justify-center gap-1"
+                  >
+                    <Upload size={11} className={isSyncingDrive ? "animate-spin" : ""} />
+                    <span>드라이브 저장</span>
+                  </button>
+                  <button
+                    onClick={() => handlePullFromGoogleDrive()}
+                    disabled={isSyncingDrive}
+                    title="구글 드라이브의 이전 백업을 내려받아 현재 브라우저 작업대를 수동 오버레이 복원합니다."
+                    className="py-1.5 px-2 bg-emerald-600/15 hover:bg-emerald-600/25 disabled:opacity-50 border border-emerald-500/20 hover:border-emerald-500/40 text-emerald-400 font-bold text-[10px] rounded-lg cursor-pointer transition flex items-center justify-center gap-1"
+                  >
+                    <Download size={11} className={isSyncingDrive ? "animate-bounce" : ""} />
+                    <span>드라이브 가져오기</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Cloud multi-session Snapshot Hub widget */}
@@ -1423,6 +1634,49 @@ volumes:
 
         </div>
       </footer>
+
+      {/* Auth Gate Overlay Modal for Google Drive priority routing */}
+      {!googleUser && !dismissGate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-md bg-black/80">
+          <div className="bg-[#141417]/95 max-w-md w-full rounded-2xl border-2 border-blue-500/30 p-8 shadow-[0_0_50px_rgba(37,99,235,0.2)] text-center space-y-6 flex flex-col justify-between">
+            <div className="space-y-4">
+              <div className="mx-auto flex items-center justify-center w-16 h-16 rounded-full bg-blue-650/10 text-blue-400 border border-blue-500/20 shadow-[0_0_20px_rgba(37,99,235,0.15)] animate-pulse">
+                <Cloud size={32} />
+              </div>
+              <div className="space-y-1">
+                <h2 className="text-xl font-extrabold tracking-tight text-white font-sans uppercase">
+                  MCP Drive 보안 연결
+                </h2>
+                <div className="text-[10px] font-mono text-blue-400 flex items-center justify-center gap-1.5 bg-blue-950/40 border border-blue-900/30 py-1 px-2.5 rounded-lg w-max mx-auto">
+                  <ShieldCheck size={11} />
+                  <span>CLOUD DATA PARANOID ENGINE v1.4</span>
+                </div>
+              </div>
+              <p className="text-xs text-slate-400 leading-relaxed font-sans px-2">
+                서버 기동 스펙, DNS 및 타임라인 파일셋의 원하지 않는 유출과 동기화 충돌을 방지하기 위해 <strong>Google Drive 연동</strong>이 최우선 보안 요구사항으로 적용됩니다.
+              </p>
+            </div>
+
+            <div className="space-y-3 pt-2">
+              <button
+                onClick={handleGoogleLogin}
+                disabled={isLoggingIn}
+                className="w-full py-3 px-4 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white font-bold text-xs uppercase tracking-wider rounded-xl cursor-pointer transition flex items-center justify-center gap-2.5 shadow-[0_4px_15px_rgba(37,99,235,0.3)] hover:shadow-[0_4px_20px_rgba(37,99,235,0.45)]"
+              >
+                <Cloud size={16} className={isLoggingIn ? "animate-spin" : ""} />
+                <span>{isLoggingIn ? "구글 계정 연동 중..." : "구글 계정으로 로그인 및 연동"}</span>
+              </button>
+
+              <button
+                onClick={() => setDismissGate(true)}
+                className="w-full py-2.5 px-4 bg-slate-900/60 hover:bg-slate-900 border border-slate-800 text-slate-500 hover:text-slate-350 text-[10px] font-bold rounded-lg cursor-pointer transition flex items-center justify-center gap-1"
+              >
+                <span>구글 연동 없이 로컬 모드로만 계속 사용하기 (동기화 비활성)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );
