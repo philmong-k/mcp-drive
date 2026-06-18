@@ -1,0 +1,10 @@
+{
+  "name": "MCP Drive",
+  "description": "An all-in-one AI coding and development workspace styled as Antigravity IDE, featuring live Gemini assistant chat, LM Studio & OpenRouter integration, multi-platform filesystem explorer, interactive DNS and hosting designer, real-time command console, and MCP server manager.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
