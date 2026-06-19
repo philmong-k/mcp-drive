@@ -3,7 +3,7 @@ import {
   Bot, Terminal, Radio, Globe, FolderCode, Layers, Cpu, Compass, HardDrive, 
   Send, Sparkles, Smile, MessageSquare, Volume2, Mic, MicOff, Settings, 
   HelpCircle, RefreshCw, AlertTriangle, ShieldCheck, CheckCircle2, ChevronRight,
-  Database, LogOut, Upload, Download, Cloud
+  Database, LogOut, Upload, Download, Cloud, Copy, Check, Menu, X
 } from "lucide-react";
 
 import { 
@@ -105,8 +105,22 @@ export default function App() {
   const [isVoiceListening, setIsVoiceListening] = useState<boolean>(false);
   const [voiceStatusText, setVoiceStatusText] = useState<string>("Mic Standby");
   const [autoSpeak, setAutoSpeak] = useState<boolean>(false);
+  const [showExtraTools, setShowExtraTools] = useState<boolean>(false);
+  const [copiedMessageId, setCopiedMessageId] = useState<string | null>(null);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState<boolean>(false);
   const voiceTimeoutRef = useRef<number | null>(null);
   const recognitionRef = useRef<any>(null);
+  const currentUtterancesRef = useRef<SpeechSynthesisUtterance[]>([]);
+
+  // Copy chat message function
+  const copyMessageToClipboard = (id: string, text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedMessageId(id);
+    logToTerminal(`[Chat] 메시지가 클립보드에 복사되었습니다.`, 'success');
+    setTimeout(() => {
+      setCopiedMessageId(null);
+    }, 2000);
+  };
 
   // Auto Scroll ref for chat
   const chatBottomRef = useRef<HTMLDivElement | null>(null);
@@ -116,15 +130,91 @@ export default function App() {
     if (!('speechSynthesis' in window)) return;
     try {
       window.speechSynthesis.cancel();
-      // Remove any code blocks inside modeling reply to make speaking clean
-      const cleanText = text
-        .replace(/`{1,3}[\s\S]*?`{1,3}/g, '코드블럭 생략')
-        .replace(/[*#_~]/g, '');
-      const utterance = new SpeechSynthesisUtterance(cleanText.slice(0, 180));
-      utterance.lang = "ko-KR";
-      utterance.rate = 1.05;
-      window.speechSynthesis.speak(utterance);
-      logToTerminal(`[Audio TTS] Speaking response audio playback...`, 'success');
+      currentUtterancesRef.current = []; // Reset reference list
+      
+      // Clean up markdown elements, code blocks, bullet points, HTML symbols, and URLs to read purely
+      let cleanText = text
+        .replace(/`{1,3}[\s\S]*?`{1,3}/g, '코드 생략') // Strip code blocks cleanly
+        .replace(/https?:\/\/\S+/g, '')                  // Remove links
+        .replace(/[*#_\-~|>\[\]()]+/g, ' ')             // Strip markdown noise
+        .replace(/\s+/g, ' ')                            // Deduplicate spaces
+        .trim();
+
+      if (!cleanText) return;
+
+      // Split text into moderate segments by punctuation to prevent chromium 15s freeze bug
+      const rawSegments = cleanText.split(/([.!?]\s+|\n+)/);
+      const segments: string[] = [];
+      let temp = "";
+      for (const token of rawSegments) {
+        if (!token) continue;
+        if (/^[.!?\n\s]+$/.test(token)) {
+          temp += token.trim();
+          if (temp.trim()) {
+            segments.push(temp.trim());
+          }
+          temp = "";
+        } else {
+          if (temp.trim()) {
+            segments.push(temp.trim());
+          }
+          temp = token;
+        }
+      }
+      if (temp.trim()) {
+        segments.push(temp.trim());
+      }
+
+      // Filter non-empty segments
+      const filteredSegments = segments.filter(s => s.trim().length > 1);
+      if (filteredSegments.length === 0) return;
+
+      // Select high-quality natural Korean voice
+      const voices = window.speechSynthesis.getVoices();
+      const bestKoVoice = voices.find(v => v.lang.startsWith('ko') && v.name.includes('Google')) ||
+                          voices.find(v => v.lang.startsWith('ko') && v.name.includes('Natural')) ||
+                          voices.find(v => v.lang.startsWith('ko')) ||
+                          null;
+
+      // Pre-instantiate all items and hold them strongly in React Ref to bypass garbage collection!
+      const utterances = filteredSegments.map((segment) => {
+        const utterance = new SpeechSynthesisUtterance(segment);
+        utterance.lang = "ko-KR";
+        if (bestKoVoice) {
+          utterance.voice = bestKoVoice;
+        }
+        // Ultra natural vocal specs (rate 0.98 for deliberate/comfort pacing, pitch 1.02 for bright warmth)
+        utterance.rate = 1.0;
+        utterance.pitch = 1.03;
+        return utterance;
+      });
+
+      currentUtterancesRef.current = utterances;
+
+      // Sequential playlist loop
+      const runPlaylist = (index: number) => {
+        if (index >= utterances.length) {
+          logToTerminal(`[Audio TTS] 대화 내용 전체 낭독이 정상 완료되었습니다.`, 'success');
+          return;
+        }
+        const utterance = utterances[index];
+        
+        utterance.onend = () => {
+          // Play next on end
+          runPlaylist(index + 1);
+        };
+        utterance.onerror = (e) => {
+          console.warn("Speech synthesis queue recovered on error:", e);
+          runPlaylist(index + 1);
+        };
+
+        window.speechSynthesis.speak(utterance);
+      };
+
+      // Trigger first node in queue
+      runPlaylist(0);
+
+      logToTerminal(`[Audio TTS] 순차 안심 낭독 작동 중 (${filteredSegments.length}개 조각, 성우: ${bestKoVoice?.name || '기본 성우'})`, 'success');
     } catch (e) {
       console.error("Speech synthesis failed:", e);
     }
@@ -210,7 +300,7 @@ export default function App() {
             role: m.role,
             parts: m.parts
           })),
-          systemInstruction: "You are Antigravity IDE AI Agent, an elite full-stack autonomous coding/dev assistant. Always reply politely in Korean (한국어로 상냥하게). Give concrete configurations, code examples, or explanations when coding is discussed. Reference files, domains, or infrastructure nodes explicitly if necessary.",
+          systemInstruction: "You are Antigravity IDE AI Agent, an elite full-stack autonomous coding/dev assistant. Always reply politely and warmly in Korean (한국어로 아주 다정하고 상냥하게 존댓말로 답변해주세요).\n\nIf the user is a coding/tech beginner or uses simpler conversational phrases (like '홈페이지', '블로그', '제안해줘', '초보', '공유', '도메인'), DO NOT overwhelm them with raw technical jargon, terminal variables, or code blocks right away.\nInstead:\n1. Proactively catch their ultimate creative/business goal (e.g. sharing work, setting up a neat home site, custom domain connection).\n2. GREET Warmly and explain the steps by comparing technical concepts to comfortable real-world metaphor analogs (e.g. Nginx config as a 'Welcome receptionist / 문지기', IP/DNS mapping as a 'Unique phone number / 연락처 저장', Database as a 'Digital safe box / 데이터 금고').\n3. Recommend 1 or 2 elegant, simplified next steps that they can understand.\n4. Assure them that you (the Agent) will handle all the complex file creation, Docker Compose configuring, and proxy setting-ups behind the scenes. Tell them what you changed, but explain its benefit in simple, rewarding sentences. Avoid excessive markdown noise.",
           config: llmConfig
         })
       });
@@ -853,6 +943,10 @@ export default function App() {
 
     loadFromIDB();
 
+    if (typeof window !== "undefined") {
+      setShowExtraTools(window.innerWidth > 1024);
+    }
+
     // Google Auth observer setup
     const unsubscribe = initAuth(
       async (user, token) => {
@@ -869,27 +963,424 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
+  const renderSidebarElements = (isMobileView: boolean = false) => {
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="text-[11px] font-mono text-slate-500 font-semibold uppercase tracking-wider px-1.5 flex items-center justify-between">
+          <span>제어 영역 선택</span>
+          {isMobileView && <span className="text-[10px] bg-slate-900 border border-slate-800 px-1.5 py-0.5 text-blue-400 font-bold rounded">모바일 모드</span>}
+        </div>
+
+        <nav className="space-y-1.5">
+          <button
+            onClick={() => {
+              setActiveTab('chat');
+              if (isMobileView) setMobileSidebarOpen(false);
+            }}
+            className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
+              activeTab === 'chat'
+                ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
+                : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Bot size={16} />
+              <span>💬 자율 AI 에이전트 챗</span>
+            </div>
+            <span className={`w-2 h-2 rounded-full ${activeTab === 'chat' ? 'bg-white' : 'bg-blue-400 animate-pulse'}`}></span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('automation');
+              if (isMobileView) setMobileSidebarOpen(false);
+            }}
+            className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
+              activeTab === 'automation'
+                ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
+                : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Sparkles size={16} className="text-[#38BDF8]" />
+              <span>🤖 코드 &amp; 인프라 자동화</span>
+            </div>
+            <span className="font-mono text-[9px] py-0.5 px-1 bg-slate-900 text-slate-400 rounded">AI</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('filesystem');
+              if (isMobileView) setMobileSidebarOpen(false);
+            }}
+            className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
+              activeTab === 'filesystem'
+                ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
+                : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <FolderCode size={16} />
+              <span>📁 듀얼 파일시스템 CRUD</span>
+            </div>
+            <span className="font-mono text-[9px] py-0.5 px-1 bg-slate-900 text-slate-400 rounded">CRUD</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('dns');
+              if (isMobileView) setMobileSidebarOpen(false);
+            }}
+            className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
+              activeTab === 'dns'
+                ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
+                : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Globe size={16} />
+              <span>🌐 DNS &amp; 인프라 자동 배포</span>
+            </div>
+            <span className="font-mono text-[9px] py-0.5 px-1 bg-slate-900 text-slate-400 rounded">DNS</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('mcp');
+              if (isMobileView) setMobileSidebarOpen(false);
+            }}
+            className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
+              activeTab === 'mcp'
+                ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
+                : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Radio size={16} />
+              <span>🔌 MCP 서버 스마트 허브</span>
+            </div>
+            <span className="font-mono text-[9px] text-emerald-400 font-bold uppercase">{mcpServers.length} EA</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab('settings');
+              if (isMobileView) setMobileSidebarOpen(false);
+            }}
+            className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
+              activeTab === 'settings'
+                ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
+                : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Settings size={16} />
+              <span>⚙️ 핵심 환경설정</span>
+            </div>
+            <span className="font-mono text-[9px] text-purple-400 font-semibold">LLM</span>
+          </button>
+        </nav>
+
+        <hr className="border-slate-800 my-1.5" />
+
+        {/* Dynamic helper card */}
+        <div className="bg-[#1A1A1F] p-3 rounded-2xl border border-slate-800 text-left text-[11px] text-slate-400 leading-relaxed font-sans shadow-inner">
+          <strong className="text-slate-200 block mb-1">💡 원스톱 개발 환경 제어팁:</strong>
+          자율 에이전트 챗 영역에서 텍스트 또는 마이크 버튼을 통해 듀얼 OS 파일들과 프록시 DNS 정보를 자동으로 편집할 수 있습니다. 
+        </div>
+
+        {/* Google Drive Secure Cloud Integration Hub */}
+        <div className="bg-[#141417]/80 rounded-2xl border border-slate-800 p-3 font-sans text-left shadow-md">
+          <div className="flex items-center justify-between mb-2.5 pb-2 border-b border-slate-800/60">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-white uppercase tracking-wide">
+              <Cloud size={14} className={googleUser ? "text-emerald-400" : "text-blue-400"} />
+              <span>Google Drive 동기화</span>
+            </div>
+            <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border leading-tight ${
+              googleUser 
+                ? "bg-emerald-950/40 text-emerald-400 border-emerald-800/40" 
+                : "bg-slate-900/60 text-slate-500 border-slate-800"
+            }`}>
+              {googleUser ? "연동 활성" : "미인증"}
+            </span>
+          </div>
+
+          {!googleUser ? (
+            <div className="space-y-3">
+              <p className="text-[10px] text-slate-500 leading-relaxed">
+                인프라 정보 & 세션 스냅샷은 브라우저 <strong>IndexedDB</strong>에 로컬 저장되어 안전합니다. 구글 계정을 연동하면 클라우드 백업 및 타 장치간 자동 동기화가 활성화됩니다.
+              </p>
+              <button
+                onClick={handleGoogleLogin}
+                disabled={isLoggingIn}
+                className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900/40 text-white font-semibold text-xs rounded-xl cursor-pointer transition flex items-center justify-center gap-2 shadow-lg shadow-blue-950/35"
+              >
+                <Cloud size={14} className={isLoggingIn ? "animate-spin" : ""} />
+                <span>{isLoggingIn ? "구글 계정 연동 중..." : "Google Drive 연동하기"}</span>
+              </button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {/* User info row */}
+              <div className="flex items-center justify-between bg-slate-950/45 border border-slate-800/60 rounded-xl p-2 min-w-0">
+                <div className="flex items-center gap-2 min-w-0">
+                  <img 
+                    src={googleUser.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${googleUser.email}`} 
+                    alt="Google User" 
+                    className="w-6 h-6 rounded-lg border border-slate-800 bg-slate-900 object-cover shrink-0"
+                    referrerPolicy="no-referrer"
+                  />
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-bold text-slate-200 truncate leading-tight">
+                      {googleUser.displayName || "Google 사용자"}
+                    </div>
+                    <div className="text-[8px] font-mono text-slate-500 truncate mt-0.5 leading-none">
+                      {googleUser.email}
+                    </div>
+                  </div>
+                </div>
+                <button
+                  onClick={handleGoogleLogout}
+                  title="계정 연동 해제"
+                  className="p-1 px-1.5 text-[8.5px] font-medium text-slate-400 bg-slate-850 hover:bg-red-950/30 hover:border-red-800/20 hover:text-red-400 border border-slate-700/50 rounded-lg cursor-pointer transition flex items-center gap-1 font-sans shrink-0"
+                >
+                  <LogOut size={10} />
+                  <span>해제</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={handlePushToGoogleDrive}
+                  disabled={isSyncingDrive}
+                  title="IndexedDB의 작업 데이터와 세션 타임라인을 구글 드라이브에 수동 업로드 보관합니다."
+                  className="py-1.5 px-2 bg-blue-600/15 hover:bg-blue-600/25 disabled:opacity-50 border border-blue-500/20 hover:border-blue-500/40 text-blue-400 font-bold text-[10px] rounded-lg cursor-pointer transition flex items-center justify-center gap-1"
+                >
+                  <Upload size={11} className={isSyncingDrive ? "animate-spin" : ""} />
+                  <span>드라이브 저장</span>
+                </button>
+                <button
+                  onClick={() => handlePullFromGoogleDrive()}
+                  disabled={isSyncingDrive}
+                  title="구글 드라이브의 이전 백업을 내려받아 현재 브라우저 작업대를 수동 오버레이 복원합니다."
+                  className="py-1.5 px-2 bg-emerald-600/15 hover:bg-emerald-600/25 disabled:opacity-50 border border-emerald-500/20 hover:border-emerald-500/40 text-emerald-400 font-bold text-[10px] rounded-lg cursor-pointer transition flex items-center justify-center gap-1"
+                >
+                  <Download size={11} className={isSyncingDrive ? "animate-bounce" : ""} />
+                  <span>가져오기</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Cloud multi-session Snapshot Hub widget */}
+        <div className="bg-[#141417]/80 rounded-2xl border border-slate-800 p-3.5 font-sans text-left">
+          <div className="flex items-center justify-between mb-2">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-white uppercase tracking-wide">
+              <Database size={13} className="text-blue-400" />
+              <span>클라우드 세션 타임라인 Hub</span>
+            </div>
+            <span className="text-[9px] font-mono px-1.5 py-0.5 bg-blue-900/40 text-blue-300 rounded border border-blue-800/30">
+              {snapshots.length}개 보관
+            </span>
+          </div>
+
+          <p className="text-[10px] text-slate-500 mb-2.5 leading-relaxed">
+            중요 작업 단계를 고유 이름으로 저장해두면 세션/기기를 불가하고 복원할 수 있습니다.
+          </p>
+
+          {/* Quick Creation form */}
+          <div className="flex gap-1.5 mb-2">
+            <input
+              type="text"
+              placeholder="예: 로그인 구현 전, 퇴근용 백업"
+              value={newSnapTitle}
+              onChange={(e) => setNewSnapTitle(e.target.value)}
+              className="flex-1 bg-[#1A1A1F] border border-slate-800 text-[10px] rounded-lg px-2.5 py-1 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
+            />
+            <button
+              onClick={handleCreateSnapshot}
+              disabled={isCreatingSnapshot}
+              title="현 작업 상대를 새 독립 스냅샷으로 생성"
+              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 disabled:bg-blue-600/55 text-white font-bold text-[10px] rounded-lg cursor-pointer transition shrink-0 flex items-center justify-center font-sans"
+            >
+              {isCreatingSnapshot ? "생성중" : "+ 새 스냅샷"}
+            </button>
+          </div>
+
+          {/* Keyword Search & Filter */}
+          {snapshots.length > 0 && (
+            <div className="mb-2.5">
+              <input
+                type="text"
+                placeholder="🔍 보관 백업 검색..."
+                value={searchSnapshotKeyword}
+                onChange={(e) => setSearchSnapshotKeyword(e.target.value)}
+                className="w-full bg-[#1A1A1F]/70 border border-slate-800/80 text-[10px] rounded-lg px-2 py-0.5 text-slate-400 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
+              />
+            </div>
+          )}
+
+          {/* Timeline Snapshot Lists */}
+          <div className="space-y-1.5 max-h-[190px] overflow-y-auto pr-1">
+            {snapshots.length === 0 ? (
+              <div className="text-[10px] text-slate-600 text-center py-4 bg-[#1A1A1F]/50 border border-dashed border-slate-800/60 rounded-xl">
+                저장된 클라우드 스냅샷이 없습니다.
+              </div>
+            ) : snapshots.filter(s => s.title.toLowerCase().includes(searchSnapshotKeyword.toLowerCase())).length === 0 ? (
+              <div className="text-[10px] text-slate-600 text-center py-2">
+                검색어와 부합하는 스냅샷이 없습니다.
+              </div>
+            ) : (
+              snapshots
+                .filter(s => s.title.toLowerCase().includes(searchSnapshotKeyword.toLowerCase()))
+                .map((snap) => (
+                  <div key={snap.id} className="bg-[#1A1A1F] border border-slate-800 rounded-xl p-2.5 flex flex-col gap-1.5 hover:border-slate-700/80 transition relative group">
+                    <div className="flex items-start justify-between gap-1.5">
+                      <div className="min-w-0 flex-1">
+                        {editingSnapId === snap.id ? (
+                          <div className="flex gap-1 items-center mt-0.5">
+                            <input
+                              type="text"
+                              value={editSnapTitleName}
+                              onChange={(e) => setEditSnapTitleName(e.target.value)}
+                              className="bg-[#141417] border border-blue-500/40 text-[10px] rounded px-1.5 py-0.5 text-white focus:outline-none w-full"
+                            />
+                            <button
+                              onClick={() => handleSaveRenameSnapshot(snap.id)}
+                              className="text-[8px] bg-blue-600 hover:bg-blue-500 text-white font-bold px-1 rounded transition whitespace-nowrap"
+                            >
+                              저장
+                            </button>
+                            <button
+                              onClick={() => setEditingSnapId(null)}
+                              className="text-[8px] bg-slate-800 hover:bg-slate-700 text-slate-400 px-1 rounded transition"
+                            >
+                              취소
+                            </button>
+                          </div>
+                        ) : (
+                          <div>
+                            <div className="flex items-center gap-1">
+                              <h4 className="text-[10px] font-bold text-slate-200 truncate cursor-pointer hover:text-blue-400 flex-1" 
+                                title="클릭하여 이름 변경 수작업 가능"
+                                onClick={() => {
+                                  setEditingSnapId(snap.id);
+                                  setEditSnapTitleName(snap.title);
+                                }}
+                              >
+                                {snap.title} ✏️
+                              </h4>
+                            </div>
+                            <div className="flex items-center gap-1.5 text-[8px] text-slate-500 font-mono mt-0.5">
+                              <span className="text-sky-400 font-bold">{snap.device || "PC"}</span>
+                              <span>•</span>
+                              <span className="text-[8px] text-slate-400 bg-slate-900 px-1 rounded-sm border border-slate-800/50">
+                                {new Date(snap.timestamp).toLocaleString()}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1 shrink-0 mt-0.5">
+                        <button
+                          onClick={() => {
+                            handleRestoreSnapshot(snap);
+                            if (isMobileView) setMobileSidebarOpen(false);
+                          }}
+                          title="이 시점으로 전체 화면, 파일셋, 로컬 계정 정보 롤백 복원"
+                          className="px-1.5 py-0.5 bg-emerald-600/15 hover:bg-emerald-600/25 text-emerald-400 border border-emerald-500/20 hover:border-emerald-500/35 text-[8px] font-bold rounded cursor-pointer transition whitespace-nowrap"
+                        >
+                          복원
+                        </button>
+                        <button
+                          onClick={() => handleOverwriteSnapshot(snap.id, snap.title)}
+                          title="현재 살아있는 실시간 작업 상태로 이 스냅샷 데이터를 덮어써서 업데이트"
+                          className="px-1.5 py-0.5 bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 border border-blue-500/20 hover:border-blue-500/35 text-[8px] font-bold rounded cursor-pointer transition whitespace-nowrap"
+                        >
+                          덮어
+                        </button>
+                        <button
+                          onClick={() => handleDeleteSnapshot(snap.id, snap.title)}
+                          title="이 스냅샷 저장본을 영구 삭제"
+                          className="px-1.5 py-0.5 bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-500/20 hover:border-red-500/35 text-[8px] font-bold rounded cursor-pointer transition whitespace-nowrap"
+                        >
+                          삭제
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen flex flex-col bg-[#0A0A0C] text-slate-300 selection:bg-blue-500/35 selection:text-blue-100 font-sans p-4 gap-4 overflow-x-hidden">
+      
+      {/* Mobile Drawer Sidebar Overlay */}
+      {mobileSidebarOpen && (
+        <div 
+          className="fixed inset-0 bg-black/85 backdrop-blur-sm z-50 xl:hidden flex justify-start transition-opacity duration-300"
+          onClick={() => setMobileSidebarOpen(false)}
+        >
+          <div 
+            className="w-[325px] max-w-[85vw] h-full bg-[#0E0E11] border-r border-slate-800 p-5 overflow-y-auto flex flex-col gap-4 shadow-2xl relative animate-in slide-in-from-left duration-200"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3.5 border-b border-slate-800">
+              <div className="flex items-center gap-2">
+                <Settings size={15} className="text-blue-500 animate-spin-slow" />
+                <span className="text-xs font-bold text-white uppercase tracking-wider">메뉴 및 인프라 제어</span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMobileSidebarOpen(false)}
+                className="p-1.5 rounded-lg bg-slate-900 border border-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            
+            {renderSidebarElements(true)}
+          </div>
+        </div>
+      )}
       
       {/* Dynamic Top Header with status indicators */}
       <header className="border border-slate-800 bg-[#141417] px-6 py-3.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 rounded-2xl shadow-[0_0_15px_rgba(37,99,235,0.08)] z-20">
         
         {/* Title branding */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br from-blue-400 via-blue-600 to-indigo-700 text-white font-bold shadow-[0_0_15px_rgba(37,99,235,0.4)] shrink-0">
-            <Bot size={22} className="text-white animate-spin-slow" />
-          </div>
-          <div>
-            <h1 className="text-sm font-extrabold tracking-tight text-white uppercase font-sans flex items-center gap-1.5 leading-none">
-              <span>MCP Drive</span>
-              <span className="text-[10px] font-mono py-0.5 px-1.5 bg-blue-950/60 text-blue-400 border border-blue-800/50 rounded">
-                CLOUD SYNC DRIVE
-              </span>
-            </h1>
-            <p className="text-[10px] font-mono text-slate-500 mt-1 leading-none">
-              All-In-One Multi-Platform Cloud Controller & File Hub (Bento Custom)
-            </p>
+        <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-start">
+          <div className="flex items-center gap-3">
+            {/* Hamburger trigger menu button on mobile/tablet */}
+            <button
+              type="button"
+              onClick={() => setMobileSidebarOpen(true)}
+              className="xl:hidden p-2 bg-slate-900 hover:bg-slate-800 active:bg-slate-700 border border-slate-800 text-slate-300 hover:text-white rounded-xl transition cursor-pointer flex items-center justify-center shadow"
+              title="메뉴 및 인프라 제어"
+            >
+              <Menu size={18} className="text-blue-500 animate-pulse" />
+            </button>
+
+            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-gradient-to-br from-blue-400 via-blue-600 to-indigo-700 text-white font-bold shadow-[0_0_15px_rgba(37,99,235,0.4)] shrink-0">
+              <Bot size={22} className="text-white animate-spin-slow" />
+            </div>
+            <div>
+              <h1 className="text-sm font-extrabold tracking-tight text-white uppercase font-sans flex items-center gap-1.5 leading-none">
+                <span>MCP Drive</span>
+                <span className="text-[10px] font-mono py-0.5 px-1.5 bg-blue-950/60 text-blue-400 border border-blue-800/50 rounded">
+                  CLOUD SYNC DRIVE
+                </span>
+              </h1>
+              <p className="text-[10px] font-mono text-slate-500 mt-1 leading-none">
+                All-In-One Multi-Platform Cloud Controller & File Hub (Bento Custom)
+              </p>
+            </div>
           </div>
         </div>
 
@@ -949,335 +1440,8 @@ export default function App() {
       <div className="flex-1 grid grid-cols-1 xl:grid-cols-12 gap-4 max-w-7xl mx-auto w-full">
         
         {/* Unified Control Navigation Sidebar Tab panel */}
-        <div className="xl:col-span-3 flex flex-col bg-[#141417] border border-slate-800 rounded-3xl overflow-hidden p-5 shadow-lg h-fit">
-          <div className="text-[11px] font-mono text-slate-500 font-semibold uppercase tracking-wider mb-3 px-1.5">
-            제어 영역 선택
-          </div>
-
-          <nav className="space-y-1.5">
-            <button
-              onClick={() => setActiveTab('chat')}
-              className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
-                activeTab === 'chat'
-                  ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
-                  : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Bot size={16} />
-                <span>💬 자율 AI 에이전트 챗</span>
-              </div>
-              <span className={`w-2 h-2 rounded-full ${activeTab === 'chat' ? 'bg-white' : 'bg-blue-400 animate-pulse'}`}></span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('automation')}
-              className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
-                activeTab === 'automation'
-                  ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
-                  : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Sparkles size={16} className="text-[#38BDF8]" />
-                <span>🤖 코드 &amp; 인프라 자동화</span>
-              </div>
-              <span className="font-mono text-[9px] py-0.5 px-1 bg-slate-900 text-slate-400 rounded">AI</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('filesystem')}
-              className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
-                activeTab === 'filesystem'
-                  ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
-                  : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <FolderCode size={16} />
-                <span>📁 듀얼 파일시스템 CRUD</span>
-              </div>
-              <span className="font-mono text-[9px] py-0.5 px-1 bg-slate-900 text-slate-400 rounded">CRUD</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('dns')}
-              className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
-                activeTab === 'dns'
-                  ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
-                  : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Globe size={16} />
-                <span>🌐 DNS &amp; 인프라 자동 배포</span>
-              </div>
-              <span className="font-mono text-[9px] py-0.5 px-1 bg-slate-900 text-slate-400 rounded">DNS</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('mcp')}
-              className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
-                activeTab === 'mcp'
-                  ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
-                  : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Radio size={16} />
-                <span>🔌 MCP 서버 스마트 허브</span>
-              </div>
-              <span className="font-mono text-[9px] text-emerald-400 font-bold uppercase">{mcpServers.length} EA</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('settings')}
-              className={`w-full py-3 px-3.5 rounded-xl font-medium text-xs flex items-center justify-between transition cursor-pointer ${
-                activeTab === 'settings'
-                  ? "bg-blue-600 text-white font-bold shadow-lg shadow-blue-500/10"
-                  : "text-slate-400 hover:bg-[#1A1A1F] hover:text-slate-200"
-              }`}
-            >
-              <div className="flex items-center gap-2.5">
-                <Settings size={16} />
-                <span>⚙️ 핵심 환경설정</span>
-              </div>
-              <span className="font-mono text-[9px] text-purple-400 font-semibold">LLM</span>
-            </button>
-
-          </nav>
-
-          <hr className="border-slate-800 my-4" />
-
-          {/* Dynamic helper card */}
-          <div className="bg-[#1A1A1F] p-4 rounded-2xl border border-slate-800 text-left text-xs text-slate-400 leading-relaxed font-sans mb-4">
-            <strong className="text-slate-200 block mb-1">💡 원스톱 개발 환경 제어팁:</strong>
-            자율 에이전트 챗 영역에서 텍스트 또는 마이크 버튼을 통해 듀얼 OS 파일들과 프록시 DNS 정보를 자동으로 편집할 수 있습니다. 
-          </div>
-
-          {/* Google Drive Secure Cloud Integration Hub */}
-          <div className="bg-[#141417]/80 rounded-2xl border border-slate-800 p-4 font-sans text-left mb-4 shadow-md">
-            <div className="flex items-center justify-between mb-2.5 pb-2 border-b border-slate-800/60">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-white uppercase tracking-wide">
-                <Cloud size={14} className={googleUser ? "text-emerald-400" : "text-blue-400"} />
-                <span>Google Drive 동기화</span>
-              </div>
-              <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded border leading-tight ${
-                googleUser 
-                  ? "bg-emerald-950/40 text-emerald-400 border-emerald-800/40" 
-                  : "bg-slate-900/60 text-slate-500 border-slate-800"
-              }`}>
-                {googleUser ? "연동 활성" : "미인증"}
-              </span>
-            </div>
-
-            {!googleUser ? (
-              <div className="space-y-3">
-                <p className="text-[10px] text-slate-500 leading-relaxed">
-                  인프라 정보 & 세션 스냅샷은 브라우저 <strong>IndexedDB</strong>에 로컬 저장되어 안전합니다. 구글 계정을 연동하면 클라우드 백업 및 타 장치간 자동 동기화가 활성화됩니다.
-                </p>
-                <button
-                  onClick={handleGoogleLogin}
-                  disabled={isLoggingIn}
-                  className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-500 disabled:bg-blue-900/40 text-white font-semibold text-xs rounded-xl cursor-pointer transition flex items-center justify-center gap-2 shadow-lg shadow-blue-950/35"
-                >
-                  <Cloud size={14} className={isLoggingIn ? "animate-spin" : ""} />
-                  <span>{isLoggingIn ? "구글 계정 연동 중..." : "Google Drive 연동하기"}</span>
-                </button>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {/* User info row */}
-                <div className="flex items-center justify-between bg-slate-950/45 border border-slate-800/60 rounded-xl p-2 min-w-0">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <img 
-                      src={googleUser.photoURL || `https://api.dicebear.com/7.x/bottts/svg?seed=${googleUser.email}`} 
-                      alt="Google User" 
-                      className="w-6 h-6 rounded-lg border border-slate-800 bg-slate-900 object-cover shrink-0"
-                      referrerPolicy="no-referrer"
-                    />
-                    <div className="min-w-0">
-                      <div className="text-[10px] font-bold text-slate-200 truncate leading-tight">
-                        {googleUser.displayName || "Google 사용자"}
-                      </div>
-                      <div className="text-[8px] font-mono text-slate-500 truncate mt-0.5 leading-none">
-                        {googleUser.email}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    onClick={handleGoogleLogout}
-                    title="계정 연동 해제"
-                    className="p-1 px-1.5 text-[8.5px] font-medium text-slate-400 bg-slate-850 hover:bg-red-950/30 hover:border-red-800/20 hover:text-red-400 border border-slate-700/50 rounded-lg cursor-pointer transition flex items-center gap-1 font-sans shrink-0"
-                  >
-                    <LogOut size={10} />
-                    <span>해제</span>
-                  </button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    onClick={handlePushToGoogleDrive}
-                    disabled={isSyncingDrive}
-                    title="IndexedDB의 작업 데이터와 세션 타임라인을 구글 드라이브에 수동 업로드 보관합니다."
-                    className="py-1.5 px-2 bg-blue-600/15 hover:bg-blue-600/25 disabled:opacity-50 border border-blue-500/20 hover:border-blue-500/40 text-blue-400 font-bold text-[10px] rounded-lg cursor-pointer transition flex items-center justify-center gap-1"
-                  >
-                    <Upload size={11} className={isSyncingDrive ? "animate-spin" : ""} />
-                    <span>드라이브 저장</span>
-                  </button>
-                  <button
-                    onClick={() => handlePullFromGoogleDrive()}
-                    disabled={isSyncingDrive}
-                    title="구글 드라이브의 이전 백업을 내려받아 현재 브라우저 작업대를 수동 오버레이 복원합니다."
-                    className="py-1.5 px-2 bg-emerald-600/15 hover:bg-emerald-600/25 disabled:opacity-50 border border-emerald-500/20 hover:border-emerald-500/40 text-emerald-400 font-bold text-[10px] rounded-lg cursor-pointer transition flex items-center justify-center gap-1"
-                  >
-                    <Download size={11} className={isSyncingDrive ? "animate-bounce" : ""} />
-                    <span>드라이브 가져오기</span>
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Cloud multi-session Snapshot Hub widget */}
-          <div className="bg-[#141417]/80 rounded-2xl border border-slate-800 p-4 font-sans text-left">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-white uppercase tracking-wide">
-                <Database size={13} className="text-blue-400" />
-                <span>클라우드 세션 타임라인 Hub</span>
-              </div>
-              <span className="text-[9px] font-mono px-1.5 py-0.5 bg-blue-900/40 text-blue-300 rounded border border-blue-800/30">
-                {snapshots.length}개 보관 중
-              </span>
-            </div>
-
-            <p className="text-[10px] text-slate-500 mb-2.5 leading-relaxed">
-              중요 작업 단계를 고유 이름으로 저장해두면 세션/기기를 불만하고 복원할 수 있습니다. 각 시점에 덮어쓰거나 관리할 수 있습니다.
-            </p>
-
-            {/* Quick Creation form */}
-            <div className="flex gap-1.5 mb-2">
-              <input
-                type="text"
-                placeholder="예: 로그인 구현 전, 퇴근용 백업"
-                value={newSnapTitle}
-                onChange={(e) => setNewSnapTitle(e.target.value)}
-                className="flex-1 bg-[#1A1A1F] border border-slate-800 text-[10px] rounded-lg px-2.5 py-1 text-slate-200 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500/50"
-              />
-              <button
-                onClick={handleCreateSnapshot}
-                disabled={isCreatingSnapshot}
-                title="현 작업 상대를 새 독립 스냅샷으로 생성"
-                className="px-2.5 py-1 bg-blue-600 hover:bg-blue-500 active:bg-blue-700 disabled:bg-blue-600/55 text-white font-bold text-[10px] rounded-lg cursor-pointer transition shrink-0 flex items-center justify-center font-sans"
-              >
-                {isCreatingSnapshot ? "생성중" : "+ 새 스냅샷"}
-              </button>
-            </div>
-
-            {/* Keyword Search & Filter */}
-            {snapshots.length > 0 && (
-              <div className="mb-2.5">
-                <input
-                  type="text"
-                  placeholder="🔍 보관 백업 검색..."
-                  value={searchSnapshotKeyword}
-                  onChange={(e) => setSearchSnapshotKeyword(e.target.value)}
-                  className="w-full bg-[#1A1A1F]/70 border border-slate-800/80 text-[10px] rounded-lg px-2 py-0.5 text-slate-400 placeholder:text-slate-600 focus:outline-none focus:ring-1 focus:ring-blue-500/30"
-                />
-              </div>
-            )}
-
-            {/* Timeline Snapshot Lists */}
-            <div className="space-y-1.5 max-h-[190px] overflow-y-auto pr-1">
-              {snapshots.length === 0 ? (
-                <div className="text-[10px] text-slate-600 text-center py-4 bg-[#1A1A1F]/50 border border-dashed border-slate-800/60 rounded-xl">
-                  저장된 클라우드 스냅샷이 없습니다.
-                </div>
-              ) : snapshots.filter(s => s.title.toLowerCase().includes(searchSnapshotKeyword.toLowerCase())).length === 0 ? (
-                <div className="text-[10px] text-slate-600 text-center py-2">
-                  검색어와 부합하는 스냅샷이 없습니다.
-                </div>
-              ) : (
-                snapshots
-                  .filter(s => s.title.toLowerCase().includes(searchSnapshotKeyword.toLowerCase()))
-                  .map((snap) => (
-                    <div key={snap.id} className="bg-[#1A1A1F] border border-slate-800 rounded-xl p-2.5 flex flex-col gap-1.5 hover:border-slate-700/80 transition relative group">
-                      <div className="flex items-start justify-between gap-1.5">
-                        <div className="min-w-0 flex-1">
-                          {editingSnapId === snap.id ? (
-                            <div className="flex gap-1 items-center mt-0.5">
-                              <input
-                                type="text"
-                                value={editSnapTitleName}
-                                onChange={(e) => setEditSnapTitleName(e.target.value)}
-                                className="bg-[#141417] border border-blue-500/40 text-[10px] rounded px-1.5 py-0.5 text-white focus:outline-none w-full"
-                              />
-                              <button
-                                onClick={() => handleSaveRenameSnapshot(snap.id)}
-                                className="text-[8px] bg-blue-600 hover:bg-blue-500 text-white font-bold px-1 rounded transition whitespace-nowrap"
-                              >
-                                저장
-                              </button>
-                              <button
-                                onClick={() => setEditingSnapId(null)}
-                                className="text-[8px] bg-slate-800 hover:bg-slate-700 text-slate-400 px-1 rounded transition"
-                              >
-                                취소
-                              </button>
-                            </div>
-                          ) : (
-                            <div>
-                              <div className="flex items-center gap-1">
-                                <h4 className="text-[10px] font-bold text-slate-200 truncate cursor-pointer hover:text-blue-400 flex-1" 
-                                  title="클릭하여 이름 변경 수작업 가능"
-                                  onClick={() => {
-                                    setEditingSnapId(snap.id);
-                                    setEditSnapTitleName(snap.title);
-                                  }}
-                                >
-                                  {snap.title} ✏️
-                                </h4>
-                              </div>
-                              <div className="flex items-center gap-1.5 text-[8px] text-slate-500 font-mono mt-0.5">
-                                <span className="text-sky-400 font-bold">{snap.device || "PC"}</span>
-                                <span>•</span>
-                                <span className="text-[8px] text-slate-400 bg-slate-900 px-1 rounded-sm border border-slate-800/50">
-                                  {new Date(snap.timestamp).toLocaleString()}
-                                </span>
-                              </div>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="flex items-center gap-1 shrink-0 mt-0.5">
-                          <button
-                            onClick={() => handleRestoreSnapshot(snap)}
-                            title="이 시점으로 전체 화면, 파일셋, 로컬 계정 정보 롤백 복원"
-                            className="px-1.5 py-0.5 bg-emerald-600/15 hover:bg-emerald-600/25 text-emerald-400 border border-emerald-500/20 hover:border-emerald-500/35 text-[8px] font-bold rounded cursor-pointer transition whitespace-nowrap"
-                          >
-                            복원
-                          </button>
-                          <button
-                            onClick={() => handleOverwriteSnapshot(snap.id, snap.title)}
-                            title="현재 살아있는 실시간 작업 상태로 이 스냅샷 데이터를 덮어써서 업데이트"
-                            className="px-1.5 py-0.5 bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 border border-blue-500/20 hover:border-blue-500/35 text-[8px] font-bold rounded cursor-pointer transition whitespace-nowrap"
-                          >
-                            덮어쓰기
-                          </button>
-                          <button
-                            onClick={() => handleDeleteSnapshot(snap.id, snap.title)}
-                            title="이 스냅샷 저장본을 영구 삭제"
-                            className="px-1.5 py-0.5 bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-500/20 hover:border-red-500/35 text-[8px] font-bold rounded cursor-pointer transition whitespace-nowrap"
-                          >
-                            삭제
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  ))
-              )}
-            </div>
-          </div>
+        <div className="hidden xl:flex xl:col-span-3 flex-col bg-[#141417] border border-slate-800 rounded-3xl overflow-hidden p-5 shadow-lg h-fit">
+          {renderSidebarElements(false)}
         </div>
 
         {/* Core dynamic Workspace panel switcher */}
@@ -1325,22 +1489,49 @@ export default function App() {
                         </div>
 
                         <div>
-                          <div className={`p-3.5 rounded-2xl block text-slate-200 whitespace-pre-wrap text-left relative group/bubble ${
+                          <div className={`p-3.5 pb-9.5 rounded-2xl block text-slate-200 whitespace-pre-wrap text-left relative group/bubble ${
                             isModel 
                               ? "bg-[#1A1A1F] border border-slate-800" 
                               : "bg-blue-600/10 border border-blue-500/20 text-blue-100"
                           }`}>
-                            {m.parts[0].text}
+                            <div className="break-words">{m.parts[0].text}</div>
                             
-                            {isModel && (
+                            {/* Action Control buttons (Always visible on mobile/tablets, hover-reveal on desktop) */}
+                            <div className="absolute right-2.5 bottom-2 flex items-center gap-1.5 opacity-100 lg:opacity-0 lg:group-hover/bubble:opacity-100 transition-opacity duration-200">
+                              {/* Speak button of this message */}
                               <button
+                                type="button"
                                 onClick={() => speakResponse(m.parts[0].text)}
-                                title="음성 안내 재생"
-                                className="absolute right-2.5 bottom-2.5 p-1 rounded-lg bg-slate-900 border border-slate-800 hover:border-blue-500 text-slate-400 hover:text-blue-400 opacity-0 group-hover/bubble:opacity-100 transition cursor-pointer"
+                                title="이 대화 음성으로 듣기"
+                                className={`p-1 rounded-lg border transition cursor-pointer flex items-center justify-center ${
+                                  isModel 
+                                    ? "bg-slate-900/90 border-slate-800 hover:border-blue-500 text-slate-400 hover:text-blue-450 hover:text-blue-400" 
+                                    : "bg-blue-950/60 border-blue-800/40 hover:border-blue-400 text-blue-300 hover:text-blue-200"
+                                }`}
                               >
-                                <Volume2 size={12} />
+                                <Volume2 size={11.5} />
                               </button>
-                            )}
+
+                              {/* Copy button of this message */}
+                              <button
+                                type="button"
+                                onClick={() => copyMessageToClipboard(m.id || '', m.parts[0].text)}
+                                title="메시지 텍스트 복사"
+                                className={`p-1 rounded-lg border transition cursor-pointer flex items-center justify-center ${
+                                  copiedMessageId === m.id
+                                    ? "bg-emerald-950/60 border-emerald-500/50 text-emerald-400"
+                                    : isModel
+                                      ? "bg-slate-900/90 border-slate-800 hover:border-blue-500 text-slate-400 hover:text-blue-450 hover:text-blue-400" 
+                                      : "bg-blue-950/60 border-blue-800/40 hover:border-blue-400 text-blue-300 hover:text-blue-200"
+                                }`}
+                              >
+                                {copiedMessageId === m.id ? (
+                                  <Check size={11.5} className="text-emerald-400" />
+                                ) : (
+                                  <Copy size={11.5} />
+                                )}
+                              </button>
+                            </div>
                           </div>
                           <span className="text-[9px] text-slate-600 font-mono mt-1 block">
                             {m.timestamp}
@@ -1365,16 +1556,100 @@ export default function App() {
                   <div ref={chatBottomRef} />
                 </div>
 
-                {/* Predeclared Scenario Action Buttons list */}
-                <div className="mb-4 pt-4 border-t border-slate-800">
-                  <span className="text-[10px] text-slate-500 uppercase font-mono font-bold block mb-2.5 text-left">
-                    ⚡ 원터치 자동 가상 개발 시나리오 단추
-                  </span>
+                {/* Beginner-friendly Goal Suggestions Slider */}
+                <div className="mt-3 mb-1 text-left sm:px-1">
+                  <div className="flex items-center gap-1.5 mb-2 pl-0.5 select-none">
+                    <Sparkles size={11} className="text-yellow-500 animate-pulse" />
+                    <span className="text-[10px] text-slate-400 font-bold tracking-tight">💡 용어가 낯설다면? 원하는 '목표'를 콕 짚어 제안받기</span>
+                  </div>
                   
-                  <div className="flex flex-wrap gap-2 text-left">
+                  <div className="flex gap-1.5 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-slate-800 scrollbar-track-transparent">
                     <button
-                      onClick={() => triggerQuickScenario("Nginx 구성 파일 인젝션", () => {
-                        handleSaveFileContent('linux', '/etc/nginx/nginx.conf', `user nginx;
+                      type="button"
+                      disabled={isChatLoading}
+                      onClick={() => handleSendMessage("저는 전문 용어나 코딩을 잘 모르는 초심자입니다! 제 가상 환경(MCP 개발 허브)에 맞춰 제가 당장 해볼 수 있는 가장 쉽고 재미있는 구성안(로드맵)을 한글로 상냥하게 제안해 주세요!")}
+                      className="bg-gradient-to-r from-blue-950/50 to-indigo-950/50 hover:from-blue-900/60 hover:to-indigo-900/60 border border-blue-900/55 hover:border-blue-500/70 rounded-xl px-2.5 py-1.5 text-[10px] text-slate-300 font-semibold transition cursor-pointer shrink-0 shadow flex items-center gap-1.5 duration-150 disabled:opacity-50"
+                    >
+                      🌱 왕초보용 로드맵 알아서 제안받기
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isChatLoading}
+                      onClick={() => handleSendMessage("나만의 아기자기한 첫 개인 홈페이지나 가벼운 방명록 전용 웹사이트를 하나 뚝딱 열고 싶어요! Nginx 웹서버나 포트 세팅 같은 어려운 인프라 설계는 에이전트가 뒤에서 알아서 완벽 세팅해 주시고, 제가 어떤 기분 좋은 첫걸음을 내딛으면 좋을지 알기 쉽게 제안해 드릴게요.")}
+                      className="bg-indigo-950/40 hover:bg-indigo-900/50 border border-indigo-900/50 hover:border-indigo-500/70 rounded-xl px-2.5 py-1.5 text-[10px] text-slate-300 font-semibold transition cursor-pointer shrink-0 shadow flex items-center gap-1.5 duration-150 disabled:opacity-50"
+                    >
+                      🏠 첫 개인 홈페이지/방명록 개설하기
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isChatLoading}
+                      onClick={() => handleSendMessage("내 컴퓨터나 안전한 공간에 사진과 메모 문서를 마음껏 모으고 기기 간에 넘나들며 꺼낼 수 있는 개인용 비밀 파일 금고(MCP 파일스토어 허브)를 구축해보고 싶습니다. 어떻게 쉽게 첫 시작을 설계할 수 있는지 안내와 가용 구성을 제안해 주세요!")}
+                      className="bg-emerald-950/40 hover:bg-emerald-900/50 border border-emerald-900/50 hover:border-emerald-500/70 rounded-xl px-2.5 py-1.5 text-[10px] text-slate-300 font-semibold transition cursor-pointer shrink-0 shadow flex items-center gap-1.5 duration-150 disabled:opacity-50"
+                    >
+                      ☁️ 사진/문서 클라우드 파일함 구비
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={isChatLoading}
+                      onClick={() => handleSendMessage("내가 만든 블로그나 홈페이지 주소를 남들에게 알릴 때 딱딱한 IP 숫자 주소 대신, 'myblog.dev' 나 'home.antg.dev' 처럼 나만의 예쁘고 세련된 고유 도메인 주소로 연결하고 싶어요. 이 도메인 연결 과정을 제 눈높이에 맞춰 쉽게 제안해주고 설정해줘.")}
+                      className="bg-cyan-950/40 hover:bg-cyan-900/50 border border-cyan-900/50 hover:border-cyan-500/70 rounded-xl px-2.5 py-1.5 text-[10px] text-slate-300 font-semibold transition cursor-pointer shrink-0 shadow flex items-center gap-1.5 duration-150 disabled:opacity-50"
+                    >
+                      🌐 내 블로그에 예쁜 이름(도메인) 달아주기
+                    </button>
+                  </div>
+                </div>
+
+                {/* Input form panel - Directly below messages viewport for max standard usability */}
+                <form 
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    handleSendMessage(userInput);
+                  }}
+                  className="bg-[#1A1A1F] border border-slate-705 border-slate-800 rounded-2xl p-2.5 flex items-center gap-2 mt-2"
+                >
+                  <input
+                    type="text"
+                    placeholder="에이전트에게 코딩, 파일 수정, 도메인 연결을 지시하세요..."
+                    value={userInput}
+                    disabled={isChatLoading}
+                    onChange={(e) => setUserInput(e.target.value)}
+                    className="flex-1 bg-transparent p-2 text-xs text-white focus:outline-none placeholder:text-slate-500 font-sans"
+                  />
+                  <button
+                    type="submit"
+                    disabled={isChatLoading || !userInput}
+                    className="p-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-800 text-white font-bold rounded-xl cursor-pointer transition shadow-lg shadow-blue-500/10 shrink-0"
+                  >
+                    <Send size={15} />
+                  </button>
+                </form>
+
+                {/* Collapsible Utility Panel Button - Space Saver */}
+                <button
+                  type="button"
+                  onClick={() => setShowExtraTools(!showExtraTools)}
+                  className="mt-3 w-full py-2 bg-slate-900/60 hover:bg-slate-900 border border-slate-800/85 rounded-xl text-[10px] text-slate-400 hover:text-white transition flex items-center justify-center gap-1.5 cursor-pointer font-bold select-none duration-150 shrink-0"
+                >
+                  <span>⚡ {showExtraTools ? "시나리오 단추 및 환경 설정 접기" : "원터치 가상 시나리오 단추 & 낭독 옵션 펼치기"}</span>
+                  <span className="text-[9px] text-blue-500 font-bold">{showExtraTools ? "▲" : "▼"}</span>
+                </button>
+
+                {showExtraTools && (
+                  <div className="mt-4 pt-3.5 border-t border-slate-800/70 space-y-3/5 text-left transition-all duration-300">
+                    {/* Predeclared Scenario Action Buttons list */}
+                    <div className="mb-3.5">
+                      <span className="text-[10px] text-slate-500 uppercase font-mono font-bold block mb-2 text-left">
+                        ⚡ 원터치 자동 가상 개발 시나리오 단추
+                      </span>
+                      
+                      <div className="flex flex-wrap gap-2 text-left">
+                        <button
+                          type="button"
+                          onClick={() => triggerQuickScenario("Nginx 구성 파일 인젝션", () => {
+                            handleSaveFileContent('linux', '/etc/nginx/nginx.conf', `user nginx;
 worker_processes auto;
 error_log /var/log/nginx/error.log warn;
 
@@ -1391,17 +1666,18 @@ http {
         }
     }
 }`);
-                        logToTerminal("[Scenario Engine] Injection: Loaded and saved edits into Nginx configuration file.", 'success');
-                        handleSendMessage("Nginx 구성 파일(/etc/nginx/nginx.conf)에 사용자 맞춤형 도메인 백엔드 주소를 수정 인젝션했습니다, 도메인 연결 설정과 Nginx 핫리스타트를 수행해줘!");
-                      })}
-                      className="bg-[#1A1A1F] border border-slate-800 hover:border-blue-500 text-slate-350 py-1.5 px-3 rounded-xl text-[10px] font-mono hover:text-blue-400 transition cursor-pointer"
-                    >
-                      코드인젝션: Nginx 프록시 편집
-                    </button>
+                            logToTerminal("[Scenario Engine] Injection: Loaded and saved edits into Nginx configuration file.", 'success');
+                            handleSendMessage("Nginx 구성 파일(/etc/nginx/nginx.conf)에 사용자 맞춤형 도메인 백엔드 주소를 수정 인젝션했습니다, 도메인 연결 설정과 Nginx 핫리스타트를 수행해줘!");
+                          })}
+                          className="bg-[#1A1A1F] border border-slate-800 hover:border-blue-500 text-slate-350 py-1.5 px-2.5 rounded-xl text-[10px] font-mono hover:text-blue-400 transition cursor-pointer"
+                        >
+                          코드인젝션: Nginx 프록시 편집
+                        </button>
 
-                    <button
-                      onClick={() => triggerQuickScenario("Postgres DB 도커 볼륨 설계", () => {
-                        handleSaveFileContent('linux', '/home/mcp-agent/docker-compose.yml', `version: '3.8'
+                        <button
+                          type="button"
+                          onClick={() => triggerQuickScenario("Postgres DB 도커 볼륨 설계", () => {
+                            handleSaveFileContent('linux', '/home/mcp-agent/docker-compose.yml', `version: '3.8'
 services:
   mcp-server-fs:
     image: node:20-alpine
@@ -1425,83 +1701,61 @@ services:
 
 volumes:
   postgres_data:`);
-                        logToTerminal("[Scenario Engine] Created Postgres compose profile inside home directory.", 'success');
-                        handleSendMessage("Docker Compose 볼륨 명세(/home/mcp-agent/docker-compose.yml)에 PostgreSQL 데이터베이스 디플로이 구성을 확장해주고 도커를 기동해줘!");
-                      })}
-                      className="bg-[#1A1A1F] border border-slate-800 hover:border-blue-500 text-slate-350 py-1.5 px-3 rounded-xl text-[10px] font-mono hover:text-blue-400 transition cursor-pointer"
-                    >
-                      가동: Docker Postgres 확장
-                    </button>
+                            logToTerminal("[Scenario Engine] Created Postgres compose profile inside home directory.", 'success');
+                            handleSendMessage("Docker Compose 볼륨 명세(/home/mcp-agent/docker-compose.yml)에 PostgreSQL 데이터베이스 디플로이 구성을 확장해주고 도커를 기동해줘!");
+                          })}
+                          className="bg-[#1A1A1F] border border-slate-800 hover:border-blue-500 text-slate-350 py-1.5 px-2.5 rounded-xl text-[10px] font-mono hover:text-blue-400 transition cursor-pointer"
+                        >
+                          가동: Docker Postgres 확장
+                        </button>
 
-                    <button
-                      onClick={() => triggerQuickScenario("도메인 antg.dev 연결 설정 추가", () => {
-                        handleAddDomain({
-                          hostname: "blog.antg.dev",
-                          targetIp: "15.200.12.33",
-                          type: "A",
-                          sslEnabled: true,
-                          sslStatus: "active",
-                          proxyStatus: true,
-                          ttl: "Auto"
-                        });
-                        logToTerminal(`[Scenario Engine] Generated dynamic mapping blog.antg.dev IP bindings.`, 'success');
-                        handleSendMessage("도메인 바인딩 테이블에 신형 IP 15.200.12.33 타겟 DNS 레코드를 추가하고 도메인 바인딩과 배포 가이드라인을 진행해줘.");
-                      })}
-                      className="bg-[#1A1A1F] border border-slate-800 hover:border-blue-500 text-slate-350 py-1.5 px-3 rounded-xl text-[10px] font-mono hover:text-blue-400 transition cursor-pointer"
-                    >
-                      도메인: antg.dev DNS 바인딩
-                    </button>
+                        <button
+                          type="button"
+                          onClick={() => triggerQuickScenario("도메인 antg.dev 연결 설정 추가", () => {
+                            handleAddDomain({
+                              hostname: "blog.antg.dev",
+                              targetIp: "15.200.12.33",
+                              type: "A",
+                              sslEnabled: true,
+                              sslStatus: "active",
+                              proxyStatus: true,
+                              ttl: "Auto"
+                            });
+                            logToTerminal(`[Scenario Engine] Generated dynamic mapping blog.antg.dev IP bindings.`, 'success');
+                            handleSendMessage("도메인 바인딩 테이블에 신형 IP 15.200.12.33 타겟 DNS 레코드를 추가하고 도메인 바인딩과 배포 가이드라인을 진행해줘.");
+                          })}
+                          className="bg-[#1A1A1F] border border-slate-800 hover:border-blue-500 text-slate-350 py-1.5 px-2.5 rounded-xl text-[10px] font-mono hover:text-blue-400 transition cursor-pointer"
+                        >
+                          도메인: antg.dev DNS 바인딩
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Audio TTS toggle controls */}
+                    <div className="flex items-center justify-between gap-2 p-2 bg-[#1A1A1F] border border-slate-800 rounded-2xl text-[10px] sm:text-xs">
+                      <span className="text-slate-400 font-sans flex items-center gap-1.5 pl-1 select-none">
+                        <Volume2 size={13} className="text-blue-400 animate-pulse" />
+                        자동 답변 음성 낭독 (Auto-Speak feedback audio)
+                      </span>
+                      <label className="relative inline-flex items-center cursor-pointer select-none">
+                        <input 
+                          type="checkbox" 
+                          className="sr-only peer hover:cursor-pointer"
+                          checked={autoSpeak}
+                          onChange={(e) => {
+                            setAutoSpeak(e.target.checked);
+                            if (e.target.checked) {
+                              speakResponse("자율 비서의 음성 피드백이 자동 활성화되었습니다.");
+                            } else {
+                              window.speechSynthesis.cancel();
+                            }
+                          }}
+                        />
+                        <div className="w-8 h-4.5 bg-slate-800 border border-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:start-[3px] after:bg-slate-400 after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600 peer-checked:after:bg-white peer-checked:after:border-transparent"></div>
+                      </label>
+                    </div>
                   </div>
-                </div>
-
-                {/* Audio TTS toggle controls */}
-                <div className="flex items-center justify-between gap-2 mb-3.5 p-2 bg-[#1A1A1F] border border-slate-800 rounded-2xl text-[10px] sm:text-xs">
-                  <span className="text-slate-400 font-sans flex items-center gap-1.5 pl-1 select-none">
-                    <Volume2 size={13} className="text-blue-400 animate-pulse" />
-                    자동 답변 음성 낭독 (Auto-Speak feedback audio)
-                  </span>
-                  <label className="relative inline-flex items-center cursor-pointer select-none">
-                    <input 
-                      type="checkbox" 
-                      className="sr-only peer hover:cursor-pointer"
-                      checked={autoSpeak}
-                      onChange={(e) => {
-                        setAutoSpeak(e.target.checked);
-                        if (e.target.checked) {
-                          speakResponse("자율 비서의 음성 피드백이 자동 활성화되었습니다.");
-                        } else {
-                          window.speechSynthesis.cancel();
-                        }
-                      }}
-                    />
-                    <div className="w-8 h-4.5 bg-slate-800 border border-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full rtl:peer-checked:after:-translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[3px] after:start-[3px] after:bg-slate-400 after:border-slate-300 after:border after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:bg-blue-600 peer-checked:after:bg-white peer-checked:after:border-transparent"></div>
-                  </label>
-                </div>
-
-                {/* Input form panel */}
-                <form 
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    handleSendMessage(userInput);
-                  }}
-                  className="bg-[#1A1A1F] border border-slate-705 border-slate-800 rounded-2xl p-2.5 flex items-center gap-2"
-                >
-                  <input
-                    type="text"
-                    placeholder="에이전트에게 코딩, 파일 수정, 도메인 연결을 지시하세요..."
-                    value={userInput}
-                    disabled={isChatLoading}
-                    onChange={(e) => setUserInput(e.target.value)}
-                    className="flex-1 bg-transparent p-2 text-xs text-white focus:outline-none placeholder:text-slate-500 font-sans"
-                  />
-                  <button
-                    type="submit"
-                    disabled={isChatLoading || !userInput}
-                    className="p-3 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-800 text-white font-bold rounded-xl cursor-pointer transition shadow-lg shadow-blue-500/10"
-                  >
-                    <Send size={15} />
-                  </button>
-                </form>
+                )}
 
               </div>
 

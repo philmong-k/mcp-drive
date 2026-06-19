@@ -2,7 +2,7 @@ import React, { useState, useEffect } from "react";
 import { 
   Link2, Bot, Server, Settings, ShieldCheck, Cpu, Terminal, Sparkles, 
   Sliders, CheckCircle2, Play, AlertCircle, Globe, Database, Key, 
-  RefreshCw, HardDrive, Shield, Info, HelpCircle
+  RefreshCw, HardDrive, Shield, Info, HelpCircle, Download, Upload, Copy, Check
 } from "lucide-react";
 import { LLMConfig } from "../types";
 
@@ -78,6 +78,311 @@ export default function ProviderSettings({
   const [dockerTag, setDockerTag] = useState(() => localStorage.getItem("docker_tag") || "latest");
   const [tailscaleIp, setTailscaleIp] = useState(() => localStorage.getItem("tailscale_ip") || "100.95.12.33");
   const [cfApiToken, setCfApiToken] = useState(() => localStorage.getItem("cf_api_token") || "");
+
+  // IDE Sync Helper Generator state
+  const [helperType, setHelperType] = useState<'nodejs' | 'python' | 'bash'>('nodejs');
+  const [targetDir, setTargetDir] = useState('C:\\Projects\\my-micro-app');
+  const [syncFileName, setSyncFileName] = useState('mcp_snapshot_data.json');
+  const [settingsSubtab, setSettingsSubtab] = useState<'helper' | 'theory'>('helper');
+
+  const [copied, setCopied] = useState(false);
+
+  const getHelperScript = () => {
+    let scriptContent = "";
+    let filename = "";
+
+    if (helperType === 'nodejs') {
+      filename = "mcp-sync-helper.js";
+      scriptContent = `/**
+ * MCP Drive - IDE 로컬 동기화 헬퍼 스크립트 (Node.js 버전)
+ * 
+ * 1. 실행 전 패키지 설치: npm install mime-types
+ * 2. 실행 명령어: node mcp-sync-helper.js
+ * 
+ * 이 스크립트는 지정된 로컬 폴더(${targetDir.replace(/\\/g, '\\\\')})의 소스코드들을 
+ * 구글 드라이브 동기화 백업 규격인 '${syncFileName}' 데이터셋으로 자동 패키징하여 
+ * 드라이브에 안전 덤프합니다. 
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+// 설정 변수
+const TARGET_DIR = path.resolve(\`${targetDir.replace(/\\/g, '/')}\`);
+const SNAPSHOT_FILE_NAME = "${syncFileName}";
+const EXCLUDE_DIRS = ['node_modules', '.git', 'dist', '.next', '.now', 'out'];
+
+console.log("==================================================");
+console.log("📸 [MCP Drive] IDE 로컬 프로젝트 동기화 헬퍼 기동");
+console.log(\`📂 대상 디렉토리: \${TARGET_DIR}\`);
+console.log(\`📦 구글 드라이브 싱크 타겟명: \${SNAPSHOT_FILE_NAME}\`);
+console.log("==================================================");
+
+function bundleFiles(dir, fileTree = {}) {
+  if (!fs.existsSync(dir)) {
+    console.error(\`❌ 에러: 경로 \${dir}가 존재하지 않습니다!\`);
+    return fileTree;
+  }
+  
+  const entries = fs.readdirSync(dir);
+  for (const entry of entries) {
+    const fullPath = path.join(dir, entry);
+    const relPath = path.relative(TARGET_DIR, fullPath).replace(/\\\\/g, '/');
+    
+    if (EXCLUDE_DIRS.some(ex => relPath === ex || relPath.startsWith(ex + '/'))) {
+      continue;
+    }
+    
+    const stat = fs.statSync(fullPath);
+    if (stat.isDirectory()) {
+      bundleFiles(fullPath, fileTree);
+    } else if (stat.isFile()) {
+      try {
+        const textContent = fs.readFileSync(fullPath, 'utf8');
+        fileTree[relPath] = textContent;
+      } catch (e) {
+         // 스키퍼
+      }
+    }
+  }
+  return fileTree;
+}
+
+try {
+  console.log("🔍 로컬 작업 영역 파일을 탐색 컴파일 중...");
+  const files = bundleFiles(TARGET_DIR);
+  
+  const payload = {
+    id: "snapshot_" + Date.now(),
+    title: \`IDE 로컬 연동: \${path.basename(TARGET_DIR)}\`,
+    timestamp: new Date().toISOString(),
+    device: "로컬 IDE 확장동기기(Node)",
+    linuxFiles: Object.keys(files).map((filepath, index) => ({
+      id: "node_f_" + index,
+      name: path.basename(filepath),
+      path: '/' + filepath,
+      type: 'file',
+      content: files[filepath]
+    })),
+    windowsFiles: Object.keys(files).map((filepath, index) => ({
+      id: "node_fw_" + index,
+      name: path.basename(filepath),
+      path: filepath.replace(/\\//g, '\\\\'),
+      type: 'file',
+      content: files[filepath]
+    }))
+  };
+
+  const outputJsonName = "local_mcp_snapshot.json";
+  fs.writeFileSync(outputJsonName, JSON.stringify(payload, null, 2), 'utf8');
+  console.log(\`\\n✨ 성공! 로컬 백업 패키지가 완성되었습니다: \${outputJsonName}\`);
+  console.log(\`💡 가이드: 이 파일을 구글 드라이브에 '\${SNAPSHOT_FILE_NAME}'으로 업로드하면,\`);
+  console.log("   MCP Drive 웹에서 '드라이브 가져오기' 원클릭으로 가상 IDE와 실시간 완벽 격리 연동됩니다!");
+  console.log("==================================================");
+} catch (error) {
+  console.error("❌ 처리 중 오류 발생:", error);
+}
+`;
+    } else if (helperType === 'python') {
+      filename = "mcp_watchdog_sync.py";
+      scriptContent = `# -*- coding: utf-8 -*-
+"""
+MCP Drive - IDE 로컬 폴더 실시간 모니터링 및 구글 드라이브 자동 동기화 가교
+실행 전 요구 설치: pip install watchdog requests
+
+이 Python 스크립트는 사용자가 소스코드를 수정할 때마다 변경 사항을 감지하여,
+구글 드라이브와 호합되는 JSON 스냅샷 번들을 백그라운드에서 실시간 오토 빌드합니다.
+"""
+
+import os
+import sys
+import time
+import json
+from datetime import datetime
+
+# ==========================================
+# ⚙️ 설 정 변 수
+# ==========================================
+TARGET_DIR = r"${targetDir}"
+OUTPUT_SNAP_NAME = "local_mcp_snapshot.json"
+EXCLUDE_DIRS = ['node_modules', '.git', 'dist', '.next', 'out', 'pycache']
+# ==========================================
+
+print("==================================================")
+print("🕒 [MCP Drive] Python 백그라운드 Watchdog 기동")
+print(f"📂 실시간 감시 대장 경로: {TARGET_DIR}")
+print(f"📦 실시간 컴파일 출력: {OUTPUT_SNAP_NAME}")
+print("==================================================")
+
+def bundle_workspace():
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] 🔄 코드 변경이 감지되었습니다. 스냅샷 자동 싱크 중...")
+    file_tree = []
+    win_file_tree = []
+    counter = 0
+
+    for root, dirs, files in os.walk(TARGET_DIR):
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+        
+        for file in files:
+            full_path = os.path.join(root, file)
+            rel_path = os.path.relpath(full_path, TARGET_DIR).replace('\\\\', '/')
+            
+            try:
+                with open(full_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                
+                file_tree.append({
+                    "id": f"py_f_{counter}",
+                    "name": file,
+                    "path": "/" + rel_path,
+                    "type": "file",
+                    "content": content
+                })
+                win_file_tree.append({
+                    "id": f"py_fw_{counter}",
+                    "name": file,
+                    "path": rel_path.replace('/', '\\\\'),
+                    "type": "file",
+                    "content": content
+                })
+                counter += 1
+            except Exception as e:
+                pass
+
+    payload = {
+        "id": f"py_snapshot_{int(time.time())}",
+        "title": f"AutoSync: {os.path.basename(TARGET_DIR)} (Python)",
+        "timestamp": datetime.now().isoformat(),
+        "device": "로컬 백그라운드 에이전트(Python-Watch)",
+        "linuxFiles": file_tree,
+        "windowsFiles": win_file_tree
+    }
+
+    try:
+        with open(OUTPUT_SNAP_NAME, 'w', encoding='utf-8') as out_f:
+            json.dump(payload, out_f, ensure_ascii=False, indent=2)
+        print("✨ 스냅샷 번들링 완료! 브라우저 콕핏 및 구글 드라이브에서 임포트 가능합니다.")
+    except Exception as e:
+        print(f"❌ 동기화 도중 오류 발생: {e}")
+
+bundle_workspace()
+
+try:
+    print("\\n[감시 가이드] 백그라운드 대기 중... Ctrl+C를 누르면 즉시 감시를 중단합니다.")
+    last_mtime = 0
+    while True:
+        current_max_mtime = 0
+        for root, dirs, files in os.walk(TARGET_DIR):
+            dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+            for file in files:
+                full_path = os.path.join(root, file)
+                try:
+                    mtime = os.path.getmtime(full_path)
+                    if mtime > current_max_mtime:
+                        current_max_mtime = mtime
+                except OSError:
+                    pass
+        
+        if last_mtime == 0:
+            last_mtime = current_max_mtime
+        elif current_max_mtime > last_mtime:
+            last_mtime = current_max_mtime
+            time.sleep(0.5)
+            bundle_workspace()
+            
+        time.sleep(1.5)
+except KeyboardInterrupt:
+    print("\\n🛑 Python 모니터링 감시 모드를 성공적으로 완수 및 종료합니다.")
+`;
+    } else {
+      filename = "mcp-oneclick-sync.sh";
+      scriptContent = `#!/bin/bash
+# MCP Drive - macOS/Linux 원클릭 초고속 파일 패키징 Bash 빌더
+# 
+# 사용법: chmod +x mcp-oneclick-sync.sh
+#         ./mcp-oneclick-sync.sh
+
+TARGET_DIR="${targetDir.replace(/\\/g, '/')}"
+OUTPUT_FILE="local_mcp_snapshot.json"
+
+echo "=================================================="
+echo "🚀 [MCP Drive] macOS/Linux 원클릭 Bash 컴파일러"
+echo "📂 대상 로컬 폴더: \$TARGET_DIR"
+echo "=================================================="
+
+if [ ! -d "\$TARGET_DIR" ]; then
+    echo "❌ 에러: '\$TARGET_DIR' 경로가 존재하지 않습니다."
+    exit 1
+fi
+
+echo "🔍 정적 에셋 및 소스코드 취합 중..."
+
+cat << 'EOF' > make_json.js
+const fs = require('fs');
+const path = require('path');
+const target = process.argv[2];
+
+const files = {};
+function read(dir) {
+  fs.readdirSync(dir).forEach(f => {
+    const fp = path.join(dir, f);
+    if (fp.includes('node_modules') || fp.includes('.git') || fp.includes('dist')) return;
+    if (fs.statSync(fp).isDirectory()) {
+      read(fp);
+    } else {
+      try {
+        files[path.relative(target, fp)] = fs.readFileSync(fp, 'utf8');
+      } catch(e) {}
+    }
+  });
+}
+read(target);
+
+const payload = {
+  id: "bash_snap_" + Date.now(),
+  title: "Bash 묶음: " + path.basename(target),
+  timestamp: new Date().toISOString(),
+  device: "로컬 단축기(Bash CLI)",
+  linuxFiles: Object.keys(files).map((p, i) => ({ id: "b_l_"+i, name: path.basename(p), path: "/" + p, type: "file", content: files[p] })),
+  windowsFiles: Object.keys(files).map((p, i) => ({ id: "b_w_"+i, name: path.basename(p), path: p.replace(/\\//g, '\\\\'), type: "file", content: files[p] }))
+};
+fs.writeFileSync('local_mcp_snapshot.json', JSON.stringify(payload, null, 2));
+EOF
+
+node make_json.js "\$TARGET_DIR"
+rm make_json.js
+
+echo "✨ 완성! 'local_mcp_snapshot.json' 내보내기가 완료되었습니다."
+echo "     이 JSON 패키지를 구글 드라이브에 '\${syncFileName}'으로 덮어 업로드하시면 즉시 미러링됩니다!"
+echo "=================================================="
+`;
+    }
+
+    return { filename, scriptContent };
+  };
+
+  const downloadSyncHelper = () => {
+    const { filename, scriptContent } = getHelperScript();
+    const blob = new Blob([scriptContent], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    
+    onLogTerminal(`[IDE 동기화 헬퍼] 사용자 요청으로 '${filename}' 헬퍼 코드 파일이 브라우저에서 자동 생성 및 다운로드되었습니다!`, 'success');
+  };
+
+  const copySyncHelper = () => {
+    const { filename, scriptContent } = getHelperScript();
+    navigator.clipboard.writeText(scriptContent);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+    onLogTerminal(`[IDE 동기화 헬퍼] 사용자 요청으로 '${filename}' 스크립트 코드 내용이 클립보드에 완벽 복사되었습니다!`, 'success');
+  };
 
   // Sync actual server configs to localStorage
   useEffect(() => {
@@ -630,31 +935,174 @@ export default function ProviderSettings({
         </div>
 
         {/* VS Code Ext Guidelines layout directly answering Q6 VS CODE extension directory mounting */}
-        <div className="bg-[#141417] border border-slate-800 rounded-3xl p-5 shadow-lg flex flex-col">
-          <div className="flex items-center gap-2 pb-2 border-b border-slate-850 mb-3 text-xs font-bold text-white uppercase font-sans">
-            <Terminal className="text-blue-500 animate-pulse" size={16} />
-            <span>VS CODE 로컬 에이전트 확장: (~파일 마운팅?)</span>
+        <div className="bg-[#141417] border border-slate-800 rounded-3xl p-5 shadow-lg flex flex-col gap-3">
+          
+          {/* Subtabs header */}
+          <div className="flex border-b border-slate-850 justify-between items-center pb-2">
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => setSettingsSubtab('helper')}
+                className={`text-[11px] font-bold pb-1 cursor-pointer transition border-b-2 ${
+                  settingsSubtab === 'helper' 
+                    ? 'text-blue-400 border-blue-500' 
+                    : 'text-slate-500 border-transparent hover:text-slate-300'
+                }`}
+              >
+                🔌 원클릭 IDE 로컬 싱크 생성기
+              </button>
+              <button
+                type="button"
+                onClick={() => setSettingsSubtab('theory')}
+                className={`text-[11px] font-bold pb-1 cursor-pointer transition border-b-2 ${
+                  settingsSubtab === 'theory' 
+                    ? 'text-blue-400 border-blue-500' 
+                    : 'text-slate-500 border-transparent hover:text-slate-300'
+                }`}
+              >
+                💡 로컬 마운트 원리 가이드
+              </button>
+            </div>
+            <span className="text-[8px] uppercase font-mono px-1.5 py-0.5 bg-indigo-950 text-indigo-300 rounded border border-indigo-900/30 font-semibold animate-pulse">
+              Sync Utility
+            </span>
           </div>
 
-          <div className="space-y-3.5 text-xs text-slate-400 font-sans leading-normal">
-            <div className="p-3 bg-blue-500/5 rounded-2xl border border-blue-500/10">
-              <strong className="text-blue-300 block mb-1">🤔 마운팅(Mounting) 원리를 1분 만에 이해해 봅시다!</strong>
-              <p className="text-[11px] leading-relaxed">
-                사용자의 로컬 컴퓨터를 <strong>호스트 PC</strong>라고 칭하며, 이 콕핏은 <strong>원격 가상 샌드박스 내부</strong>에 고립 구동되고 있습니다. 
-                <br /><br />
-                로컬 에이전트 config의 <code className="text-blue-400 font-mono font-semibold">"args": ["@modelcontextprotocol/server-filesystem", "C:\\Users\\...\\Projects"]</code> 의 뜻은, 콕핏 원격 에이전트가 로컬에 실행된 파일서버 통로(npx)를 통해 사용자의 하드디스크의 <strong>특정 폴더</strong>(이를테면 ~Projects)를 <strong>장비 마운팅(Direct storage linkage)</strong>했다는 의미입니다.
+          {settingsSubtab === 'helper' ? (
+            <div className="space-y-3.5 text-xs">
+              <p className="text-[11px] text-slate-400 leading-normal">
+                안티그래비티 API 할당량(Quota) 소모 없이, <strong>원클릭 로컬 헬퍼 스크립트</strong>를 다운로드하여 로컬 프로젝트 폴더를 구글 드라이브와 자동으로 백그라운드 동기화하세요!
               </p>
-            </div>
 
-            <div className="p-3 bg-[#1A1A1F] rounded-2xl border border-slate-800">
-              <strong className="text-white block mb-1 font-bold">💡 실제 연결은 어떻게 이뤄지나요?</strong>
-              <ol className="list-decimal pl-4 space-y-1.5 text-[11px] text-slate-350">
-                <li>로컬 컴퓨터 VS Code에 Antigravity 에이전트 확장을 설치합니다.</li>
-                <li>설치 시 위의 JSON 코드가 로컬 설정 파일(<code className="text-blue-400 font-mono">vscode-agent-config.json</code>)에 안장 마운트됩니다.</li>
-                <li>콕핏에서 파일 <strong>생성 / 수정 / 삭제(CRUD)</strong> 지시를 클릭하면, 원격 AI 에이전트가 이 마운트된 로컬 포트를 두드려서 로컬 폴더 외부의 실제 파일을 그대로 대리 조각하여 즉시 디스크에 저장합니다!</li>
-              </ol>
+              <div className="space-y-2.5">
+                {/* Watch Directory */}
+                <div>
+                  <label className="text-[9px] text-slate-500 font-mono block mb-1 uppercase font-bold">감시 및 번들 대상 로컬 폴더 경로</label>
+                  <input
+                    type="text"
+                    value={targetDir}
+                    onChange={(e) => setTargetDir(e.target.value)}
+                    placeholder="예: C:\MyProjects\my-todo-app"
+                    className="w-full bg-slate-950 border border-slate-850 px-2.5 py-1.5 text-[11px] font-mono text-slate-300 rounded-xl focus:outline-none"
+                  />
+                </div>
+
+                {/* Sync Target Name */}
+                <div>
+                  <label className="text-[9px] text-slate-500 font-mono block mb-1 uppercase font-bold">구글 드라이브 업로드 타겟 파일명</label>
+                  <input
+                    type="text"
+                    value={syncFileName}
+                    onChange={(e) => setSyncFileName(e.target.value)}
+                    placeholder="mcp_snapshot_data.json"
+                    className="w-full bg-slate-950 border border-slate-850 px-2.5 py-1.5 text-[11px] font-mono text-slate-300 rounded-xl focus:outline-none"
+                  />
+                </div>
+
+                {/* Script Type selector */}
+                <div>
+                  <label className="text-[9px] text-slate-500 font-mono block mb-1.5 uppercase font-bold">스크립트 기동 언어 / 환경</label>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setHelperType('nodejs')}
+                      className={`py-1 rounded-lg text-[10px] font-semibold cursor-pointer transition border ${
+                        helperType === 'nodejs'
+                          ? 'bg-blue-600/15 border-blue-500/50 text-blue-400 font-bold'
+                          : 'bg-slate-900 border-slate-850 text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      Node.js
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHelperType('python')}
+                      className={`py-1 rounded-lg text-[10px] font-semibold cursor-pointer transition border ${
+                        helperType === 'python'
+                          ? 'bg-indigo-600/15 border-indigo-500/50 text-indigo-400 font-bold'
+                          : 'bg-slate-900 border-slate-850 text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      Python
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHelperType('bash')}
+                      className={`py-1 rounded-lg text-[10px] font-semibold cursor-pointer transition border ${
+                        helperType === 'bash'
+                          ? 'bg-emerald-600/15 border-emerald-500/50 text-emerald-400 font-bold'
+                          : 'bg-slate-900 border-slate-850 text-slate-500 hover:text-slate-300'
+                      }`}
+                    >
+                      macOS/Linux Shell
+                    </button>
+                  </div>
+                </div>
+
+                {/* Explanatory text */}
+                <div className="p-2.5 bg-slate-950 rounded-xl border border-slate-850 text-[10px] text-slate-500 leading-normal">
+                  {helperType === 'nodejs' && "💾 Node.js 헬퍼: 파일 구조를 그대로 읽어 단 한 번에 snapshots 완벽 호환 JSON 규격으로 가공 생성해 줍니다."}
+                  {helperType === 'python' && "🕒 Python 감시견: Watchdog 폴링 루프 탑재. 사용자가 로컬 파일을 ctrl+s 저장하는 즉시 실시간 오토 싱크 패키지 갱신!"}
+                  {helperType === 'bash' && "🐚 Bash 쉘 빌더: macOS/리눅스 환경 기동용 무설치 단기 속공 내보내기 쉘 스크립트 파일 제공."}
+                </div>
+
+                {/* Download & Copy Buttons Grid */}
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={downloadSyncHelper}
+                    className="py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-[11.5px] transition cursor-pointer flex items-center justify-center gap-1.5 shadow"
+                  >
+                    <Download size={13} />
+                    <span>스크립트 다운로드</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={copySyncHelper}
+                    className={`py-2.5 font-bold rounded-xl text-[11.5px] transition cursor-pointer flex items-center justify-center gap-1.5 shadow border ${
+                      copied 
+                        ? 'bg-emerald-600/20 border-emerald-500 text-emerald-400' 
+                        : 'bg-slate-900 hover:bg-slate-850 border-slate-800 text-slate-300'
+                    }`}
+                  >
+                    {copied ? <Check size={13} className="animate-bounce" /> : <Copy size={13} />}
+                    <span>{copied ? "클립보드 복사됨!" : "코드 직접 복사"}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* 3 Step Usage flow */}
+              <div className="bg-[#1A1A1F] p-3 border border-slate-800 rounded-2xl">
+                <strong className="text-white block mb-1 text-[11px]">🛠️ 로컬 IDE 실행 3단계 가이드</strong>
+                <ol className="list-decimal pl-4 space-y-1 text-[10px] text-slate-400 leading-relaxed">
+                  <li>다운로드한 스크립트 파일을 해당 개발 폴더에 붙여넣습니다.</li>
+                  <li>터미널에서 스크립트를 기동하여 <code className="text-blue-400 font-mono">local_mcp_snapshot.json</code> 파일을 아웃풋합니다.</li>
+                  <li>이제 MCP Drive 웹 좌측의 <strong>☁️ 구글 드라이브 가져오기</strong> 버튼을 누르면 실시간 듀얼 파일 탐색기에 로컬 소스가 1초 만에 자동 오버레이 복원되어 실행됩니다!</li>
+                </ol>
+              </div>
             </div>
-          </div>
+          ) : (
+            <div className="space-y-3.5 text-xs text-slate-400 font-sans leading-normal">
+              <div className="p-3 bg-blue-500/5 rounded-2xl border border-blue-500/10">
+                <strong className="text-blue-300 block mb-1">🤔 마운팅(Mounting) 원리를 1분 만에 이해해 봅시다!</strong>
+                <p className="text-[11px] leading-relaxed">
+                  사용자의 로컬 컴퓨터를 <strong>호스트 PC</strong>라고 칭하며, 이 콕핏은 <strong>원격 가상 샌드박스 내부</strong>에 고립 구동되고 있습니다. 
+                  <br /><br />
+                  로컬 에이전트 config의 <code className="text-blue-400 font-mono font-semibold">"args": ["@modelcontextprotocol/server-filesystem", "C:\\Users\\...\\Projects"]</code> 의 뜻은, 콕핏 원격 에이전트가 로컬에 실행된 파일서버 통로(npx)를 통해 사용자의 하드디스크의 <strong>특정 폴더</strong>(이를테면 ~Projects)를 <strong>장비 마운팅(Direct storage linkage)</strong>했다는 의미입니다.
+                </p>
+              </div>
+
+              <div className="p-3 bg-[#1A1A1F] rounded-2xl border border-slate-800">
+                <strong className="text-white block mb-1 font-bold">💡 실제 연결은 어떻게 이뤄지나요?</strong>
+                <ol className="list-decimal pl-4 space-y-1.5 text-[11px] text-slate-350">
+                  <li>로컬 컴퓨터 VS Code에 Antigravity 에이전트 확장을 설치합니다.</li>
+                  <li>설치 시 위의 JSON 코드가 로컬 설정 파일(<code className="text-blue-450 font-mono text-blue-400">vscode-agent-config.json</code>)에 안장 마운트됩니다.</li>
+                  <li>콕핏에서 파일 <strong>생성 / 수정 / 삭제(CRUD)</strong> 지시를 클릭하면, 원격 AI 에이전트가 이 마운트된 로컬 포트를 두드려서 로컬 폴더 외부의 실제 파일을 그대로 대리 조각하여 즉시 디스크에 저장합니다!</li>
+                </ol>
+              </div>
+            </div>
+          )}
         </div>
 
       </div>

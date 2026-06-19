@@ -154,3 +154,88 @@ LM Studio(로컬 LLM) 또는 OpenRouter(클라우드 핫스왑 LLM)를 기반으
    - AI가 생성 또는 편집한 새로운 가상 파일 세트 JSON을 기존 파일 ID에 **업데이트 업로드(Update Media API)**를 수행합니다.
    - 사용자가 MCP Drive 웹에 진입하여 `☁️ Google Drive 동기화`를 수행하면 로컬 IndexedDB에 코드가 즉각 덮어씌워지며 듀얼 파일 탐색기와 실시간 테마 가상 인프라에 자율 반영됩니다!
 
+---
+
+## 🔌 IDE 확장앱 및 원클릭 로컬 스냅샷 빌더 (One-Click Local Snapshot Extension Rule)
+
+로컬 AI(LM Studio)나 원격 AI(안티그래비티, OpenRouter 등)의 **API 할당량(Quota) 제한**이나 복잡한 프롬프트 엔지니어링 에러에서 영리하게 벗어나기 위해, **IDE 전용 확장앱(또는 로컬 백그라운드 덱)에 단 2개의 원클릭 버튼을 구현하여 연동하는 하이퍼-하이브리드 방식**을 제안하며 실전 스크립트 규격을 제공합니다.
+
+이 방식을 사용하면 에이전트 자율 백오피스 대신 사용자가 **물리적 빌드를 완벽히 통제하면서도 초고속 클라우드 웹 프리뷰**를 공유받을 수 있습니다.
+
+### 1. 🔘 마스터 버튼 설계 (The Dual Snapshot Buttons)
+현재 활성화된 IDE 프로젝트 우측 상단이나 사이드바에 아래의 두 버튼을 장착합니다.
+
+*   📸 **[프로젝트 단위 스냅샷 백업]**: 현재 마포코드를 작업하고 있는 특정 마이크로앱(예: `src/components/todo/*` 혹은 단일 폴더) 내부의 연관 정적 파일 세트만 빠르게 취합하여 가상 트리로 정제 업로드합니다.
+*   📦 **[루트 폴더 전체 백업]**: 현재 디렉터리 전체(`.gitignore` 대상 제외)를 풀 패키징하여 MCP Drive의 호환 구조로 Google Drive에 단 한 번에 밀어 넣습니다.
+
+---
+
+### 2. 📜 로컬 Node.js/Python 묶음 및 업로드 에셋 스크립트 (CLI/Ext Helper code)
+이 코드는 IDE 확장앱 내부 또는 개별 단축키 스크립트에 이식하여 **폴더 안의 실제 파일 시스템을 MCP Drive가 100% 읽어들일 수 있는 스냅샷 JSON 규격**으로 가공하고 드라이브에 다이렉트 업로드하는 예시입니다.
+
+> ⚡ **실시간 업데이트 알림**: 이제 본 시스템의 **[환경 설정(Settings)] -> [🔌 원클릭 IDE 로컬 싱크 생성기]** 탭에서 지정된 경로와 파일명을 기준으로 **Node.js / Python Watchdog / Bash Shell** 환경에 최적화된 동기화 헬퍼 스크립트를 즉시 설정하고 **원클릭으로 파일 다운로드**할 수 있습니다!
+> - **Python Watchdog 헬퍼**의 경우, 백그라운드에서 실시간 파일 변경(`ctrl + s`)을 자동으로 감지하여 구글 드라이브 스냅샷 JSON을 언제나 최신으로 유지해 주는 강력한 자동 기동 엔진이 내장되어 있습니다.
+
+```typescript
+// mcp-bundler.ts
+import * as fs from 'fs';
+import * as path from 'path';
+
+interface SnapshotFileRef {
+  content: string;
+}
+
+interface MCPDriveSnapshot {
+  id: string;
+  name: string;
+  timestamp: string;
+  files: Record<string, SnapshotFileRef>;
+}
+
+// 스냅샷 JSON 객체 구성용 번들러 함수
+export function bundleWorkspace(targetDir: string, ignoreList: string[] = ['node_modules', '.git', 'dist']): MCPDriveSnapshot {
+  const fileTree: Record<string, SnapshotFileRef> = {};
+
+  function walk(currentPath: string) {
+    const list = fs.readdirSync(currentPath);
+    list.forEach((file) => {
+      const fullPath = path.join(currentPath, file);
+      const stat = fs.statSync(fullPath);
+      const relativePath = path.relative(targetDir, fullPath).replace(/\\/g, '/'); // OS 호환성 처리
+
+      if (ignoreList.some(ignore => relativePath.includes(ignore))) {
+        return;
+      }
+
+      if (stat && stat.isDirectory()) {
+        walk(fullPath);
+      } else {
+        const content = fs.readFileSync(fullPath, 'utf-8');
+        fileTree[relativePath] = { content };
+      }
+    });
+  }
+
+  walk(targetDir);
+
+  return {
+    id: `snapshot_${Date.now()}`,
+    name: `IDE One-Click Target: ${path.basename(targetDir)}`,
+    timestamp: new Date().toISOString(),
+    files: fileTree
+  };
+}
+
+// 🚀 이 JSON 결과물을 Google Drive API (files.create or files.update)를 통해 
+// 파일명 `mcp_snapshot_data.json` 등으로 업로드하면 MCP Drive 웹에서 즉시 미러 프리뷰가 가능합니다.
+```
+
+---
+
+### 3. 🎯 이 방식의 확실한 3대 혜택 (Key Advantages)
+
+1.  **완전한 물리 통제권**: AI가 의도하지 않게 파일 전체를 날려버리거나 무한 루프에 빠뜨리는 오류 없이, 오직 개발이 완료되거나 검증된 시점만 정밀 타임라인으로 백업됩니다.
+2.  **안티그래비티 API 쿼터 절약**: 무겁고 까다로운 전체 리팩토링 요청 대신, 소스코드 수정은 로컬의 LM Studio나 경량 AI가 로컬 에디터에서 정밀 무상태로 주도하고, 프리뷰 및 타임라인 이력 관리는 구글 드라이브라는 브라우저 서버리스 프리뷰를 활용함으로써 **서버 요금이나 토큰 낭비가 0에 가깝습니다.**
+3.  **원스톱 클라우드 퍼블리싱**: IDE에서 백업 버튼을 누른 즉시 모바일, 태블릿, 혹은 동료의 브라우저에서 `https://ais-pre-...` 도메인 하나로 실시간 스냅샷을 검증 및 임포트할 수 있습니다.
+
+
