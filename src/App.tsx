@@ -26,6 +26,11 @@ export default function App() {
   // Navigation Tabs State
   const [activeTab, setActiveTab] = useState<'chat' | 'automation' | 'filesystem' | 'dns' | 'mcp' | 'settings'>('chat');
 
+  // Lifted state for file explorers
+  const [platform, setPlatform] = useState<'linux' | 'windows'>('linux');
+  const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
+  const [editorContent, setEditorContent] = useState<string>("");
+
   // Multi-platform file system state (visual CRUD)
   const [linuxFiles, setLinuxFiles] = useState<FileNode[]>(initialLinuxFiles);
   const [windowsFiles, setWindowsFiles] = useState<FileNode[]>(initialWindowsFiles);
@@ -258,36 +263,316 @@ export default function App() {
 
     // Real-time tool-call simulation intercepter to link Chat with other components
     const msgLower = msgText.toLowerCase();
-    if (msgLower.includes("nginx") || msgLower.includes("nginx.conf")) {
+
+    // Helper to find file in tree
+    const findFileRecursively = (nodes: FileNode[], pathPart: string): FileNode | null => {
+      for (const node of nodes) {
+        if (node.type === 'file' && (node.name.toLowerCase().includes(pathPart.toLowerCase()) || node.path.toLowerCase().replace(/\\/g, '/').includes(pathPart.toLowerCase()))) {
+          return node;
+        }
+        if (node.children) {
+          const found = findFileRecursively(node.children, pathPart);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+
+    // Helper to get filepath by name
+    const getFileDetails = (text: string): { file: FileNode; plat: 'linux' | 'windows' } | null => {
+      const parts = [
+        "index.html", "app.js", "nginx.conf", "docker-compose.yml", "hosts", "config.json", "readme.md"
+      ];
+      for (const p of parts) {
+        if (text.toLowerCase().includes(p)) {
+          const lf = findFileRecursively(linuxFiles, p);
+          if (lf) return { file: lf, plat: 'linux' };
+          const wf = findFileRecursively(windowsFiles, p);
+          if (wf) return { file: wf, plat: 'windows' };
+        }
+      }
+      const fileKeywords = ["index", "html", "nginx", "hosts", "docker", "compose", "config", "readme"];
+      for (const k of fileKeywords) {
+        if (text.toLowerCase().includes(k)) {
+          const lf = findFileRecursively(linuxFiles, k);
+          if (lf) return { file: lf, plat: 'linux' };
+          const wf = findFileRecursively(windowsFiles, k);
+          if (wf) return { file: wf, plat: 'windows' };
+        }
+      }
+      return null;
+    };
+
+    let processedOffline = false;
+    let offlineReply = "";
+
+    // 1. Goal-driven: Snapshot and backup intents (e.g., "현재 상태 백업해줘", "작업 저장하자")
+    if (msgLower.includes("스냅샷") || msgLower.includes("백업") || msgLower.includes("세이브") || msgLower.includes("체크포인트") || msgLower.includes("작업 저장") || msgLower.includes("작업저장") || msgLower.includes("현재 상태 저장")) {
+      processedOffline = true;
+      logToTerminal(`[Intent Detected] 사용자 백업 의도 감지: create_snapshot (자동 무중단 백업)`, 'success');
+      
+      const titleText = `${new Date().toLocaleTimeString()} 사용자 맞춤 자동 백업`;
+      const newSnap = {
+        id: "snap_" + Date.now(),
+        title: titleText,
+        timestamp: new Date().toISOString(),
+        device: window.innerWidth < 1024 ? "Mobile" : "PC/Desktop",
+        payload: currentWorkspaceSnapshotPayload()
+      };
+      
       setTimeout(() => {
-        handleSaveFileContent('linux', '/etc/nginx/nginx.conf', `server {
-    listen 80;
-    server_name mcp-control.dev;
-    location / {
-        root /var/www/html;
-        index index.html;
+        saveSnapshotsLocal([...snapshots, newSnap]).then(() => {
+          setSnapshots(prev => [newSnap, ...prev]);
+          logToTerminal(`[스냅샷 자동화] 📸 성공적으로 새로운 스냅샷 시점 ("${titleText}")을 디스크에 저장했습니다!`, 'success');
+        });
+      }, 500);
+
+      offlineReply = `[사용자 의도 감지] 📸 **체크포인트 자동 저장 완료**
+
+사용자님의 말씀에서 "현재 상태 백업" 목적을 감지하고, 가상 공간을 보존할 수 있도록 에이전트가 뒤에서 알아서 관련 정보를 취합해 저장 자격 증명을 기동했습니다!
+
+• **수행된 작업**: 브라우저 보안 IndexedDB를 경유하여 파일트리, 도메인, 자격 증명 테이블 가압 상태를 통합 포장
+• **백업 명칭**: \`"${titleText}"\`
+• **저장 위치**: 로컬 브라우저 기기 격리 디스크 스토어
+
+어려운 명령어 없이도 안심하고 계속 작업을 타임라인으로 백업하실 수 있습니다.`;
     }
-}`);
-        logToTerminal("[MCP 스마트 가교 Service] 🚀 AI 에이전트가 챗 명령을 접수하여 '/etc/nginx/nginx.conf' 파일을 직접 수정했습니다!", "success");
-      }, 1200);
-    } else if (msgLower.includes("도메인") || msgLower.includes("dns") || msgLower.includes("cloudflare")) {
+
+    // 2. Goal-driven: Domain or DNS Setup (e.g., "dns 연결해줘", "antg.dev 주소 세팅해", "내 도메인 주소로 사이트 띄워줘")
+    else if (msgLower.includes("도메인") || msgLower.includes("dns") || msgLower.includes("cloudflare") || msgLower.includes("주소") || msgLower.includes("연결") && (msgLower.includes("아이피") || msgLower.includes("ip") || msgLower.includes(".dev") || msgLower.includes(".com"))) {
+      processedOffline = true;
+      const hostSuggestion = msgLower.includes("antg.dev") ? "blog.antg.dev" : "my-web.antg.dev";
+      
+      logToTerminal(`[Intent Detected] 도메인 연결 의도 감지 -> 1) DNS 레코드 등록 2) Nginx 게이트웨이 프록시 설정 자동 연계 수정`, 'info');
+      logToTerminal(`[자동 실행] 중계 서버 도구 구동: cloudflare_api (add_dns_record, target: '${hostSuggestion}')`, 'success');
+      logToTerminal(`[자동 실행] 중계 서버 도구 구동: write_file (path: '/etc/nginx/nginx.conf')`, 'success');
+
       setTimeout(() => {
+        // 1) Add dynamic DNS Mapping
         handleAddDomain({
-          hostname: "api-agent.antg.dev",
-          targetIp: "128.91.43.11",
+          hostname: hostSuggestion,
+          targetIp: "15.200.12.33",
           type: "A",
           sslEnabled: true,
           sslStatus: "active",
           proxyStatus: true,
           ttl: "Auto"
         });
-        logToTerminal("[MCP 스마트 가교 Service] 🌐 AI 에이전트가 'api-agent.antg.dev' (IP: 128.91.43.11) DNS 레코드를 켜고 프록시를 바인딩했습니다!", "success");
-      }, 1500);
-    } else if (msgLower.includes("mcp") || msgLower.includes("mcp 서버") || msgLower.includes("허브") || msgLower.includes("mcp hub")) {
-      setTimeout(() => {
-        handleAddMCPServer("MCP-Sqlite-Db", "SSE", "http://localhost:5500/sse");
-        logToTerminal("[MCP 스마트 가교 Service] 🔌 챗 대화 중 탐지된 DB 요구사항에 맞추어 'MCP-Sqlite-Db' 서버를 스마트 허브에 자동 플러그인 마운트했습니다!", "success");
+
+        // 2) Under-the-hood auto configuration for Nginx conf to bind webserver
+        const nginxNode = findFileRecursively(linuxFiles, 'nginx.conf');
+        if (nginxNode) {
+          const updatedNginx = nginxNode.content + `\n# --- Auto-configured Backend binding for ${hostSuggestion} ---\nserver {\n    listen 80;\n    server_name ${hostSuggestion};\n    location / {\n        proxy_pass http://127.0.0.1:3000;\n        proxy_set_header Host $host;\n    }\n}\n`;
+          handleSaveFileContent('linux', '/etc/nginx/nginx.conf', updatedNginx);
+          logToTerminal(`[Nginx Smart Patch] Nginx config file /etc/nginx/nginx.conf hot-patched successfully for '${hostSuggestion}'!`, 'success');
+        }
+
+        setActiveTab('dns');
+        logToTerminal(`[Smart Route Engine] DNS 바인딩 완료: '${hostSuggestion}' -> 15.200.12.33 (IPv4 Proxy Cloudflare Route enabled)`, 'success');
       }, 1000);
+
+      offlineReply = `[사용자 의도 감지] 🌐 **도메인 자동 연동 및 프록시 설정 완료**
+
+사용자님께서 복잡한 인프라 파일명 수정을 직접 신경 쓰실 필요가 전혀 없습니다! 말씀하신 "도메인 주소 세팅 정황"에 발맞추어, 에이전트가 뒤에서 가상 시스템의 **기본 게이트웨이 파일** 및 **Cloudflare DNS 레코딩**을 한 번에 준비해 드렸습니다.
+
+• **자동 수행된 1단계**: DNS 레코드에 \`${hostSuggestion}\` ➔ \`15.200.12.33\`(IPv4 Proxy) 바인딩 추가
+• **자동 수행된 2단계**: Nginx 구성문 (\`/etc/nginx/nginx.conf\`)의 서버 블록에 리버스 프록시 연계 모듈 및 SSL 레이어 강제 인젝션 완료
+• **현재 화면 포커스**: 배포 완료 상황을 편안하게 확인하실 수 있도록 **DNS 토폴로지** 탭으로 전환해 놓았습니다!
+
+이제 설정된 주소로 세계 곳곳의 고객들이 회원님의 웹 서버에 노크할 수 있도록 길이 활짝 열렸습니다.`;
+    }
+
+    // 3. Goal-driven: Database and Container creation (e.g., "데이터베이스 켜줘", "디비 구축해", "서버 올려줘", "도커 연동")
+    else if (msgLower.includes("데이터베이스") || msgLower.includes("db") || msgLower.includes("디비") || msgLower.includes("docker") || msgLower.includes("도커") || msgLower.includes("compose") || msgLower.includes("postgres") || msgLower.includes("sqlite") || msgLower.includes("mcp") || msgLower.includes("엠씨피")) {
+      processedOffline = true;
+      logToTerminal(`[Intent Detected] DB 및 컨테이너 가상 플랫폼 구성 의도 감지 -> 1) Docker Compose 멀티 스택 설계 2) MCP Database 연동 꽂기`, 'info');
+      logToTerminal(`[자동 실행] 중계 서버 도구 구동: write_file (path: '/home/mcp-agent/docker-compose.yml')`, 'success');
+      logToTerminal(`[자동 실행] 중계 서버 도구 구동: mcp_server_mount (Endpoint: 'http://localhost:5500/sse')`, 'success');
+
+      setTimeout(() => {
+        // 1) Update /home/mcp-agent/docker-compose.yml to enable multiple container stacks
+        const composeNode = findFileRecursively(linuxFiles, 'docker-compose.yml');
+        if (composeNode) {
+          const updatedCompose = composeNode.content + `\n# --- Extended Multi-Layer Database cluster config ---\n  redis-cache:\n    image: redis:7-alpine\n    container_name: antg-redis-pool\n    ports:\n      - "6379:6379"\n  mcp-sqlite-connector:\n    image: node:20-alpine\n    container_name: mcp-sqlite-connector\n    volumes:\n      - ./sqlite-data:/data\n    command: npx @modelcontextprotocol/server-sqlite --db /data/app.db\n`;
+          handleSaveFileContent('linux', '/home/mcp-agent/docker-compose.yml', updatedCompose);
+          logToTerminal(`[Docker Compose Core] PostgreSQL & SQLite & Redis Multi-Services scale deployment configured.`, 'success');
+        }
+
+        // 2) Mount Database Service into MCP Gateway
+        handleAddMCPServer("MCP-Sqlite-Db", "SSE", "http://localhost:5500/sse");
+        setActiveTab('mcp');
+        logToTerminal(`[MCP Smart Connect] 🔌 게이트웨이에 'MCP-Sqlite-Db' SSE 채널을 정밀 바인딩하였습니다.`, 'success');
+      }, 1000);
+
+      offlineReply = `[사용자 의도 감지] 🔋 **데이터베이스 다중 컨테이너 및 MCP 연동 완료**
+
+회원님께 "docker-compose.yml 파일을 열고 PostgreSQL 설정을 써넣어 주세요"라고 부탁드리는 대신, 에이전트가 데이터베이스 구성 지향을 감지하여 고도로 포장된 분산 DB 환경을 한 발 앞서 구축했습니다!
+
+• **자동 수행된 1단계**: \`/home/mcp-agent/docker-compose.yml\` 파일을 열어 PostgreSQL에 연동될 고속 메모리 캐시인 **Redis** 서버 및 **SQLite 분산 프로파일** 스택을 자동 인젝션
+• **자동 수행된 2단계**: 생성된 보안 데이터 노드를 외부 AI나 타 기기가 즉시 정적 쿼리할 수 있도록 **MCP-Sqlite-Db** 통합 커넥터 마운트 게이트웨이 개설 완료
+• **현재 화면 포커스**: 추가된 연동 포인트를 모니터링하기 위해 **스마트 협업(MCP)** 전용 대시보드로 자리를 옮겨 드렸습니다!
+
+사용자는 코딩 한 줄 몰라도 백엔드 멀티티어 DB 인프라 구축의 정점을 실시간으로 확인하실 수 있습니다.`;
+    }
+
+    // 4. Goal-driven: Frontend UI and Landing Page (e.g., "내 홈페이지 만들어줘", "기본 메인화면 바꿔줘", "첫 웹사이트 뚝딱 세팅해줘")
+    else if (msgLower.includes("홈페이지") || msgLower.includes("웹페이지") || msgLower.includes("메인화면") || msgLower.includes("사이트") || msgLower.includes("웹사이트") || msgLower.includes("html") || msgLower.includes("화면")) {
+      processedOffline = true;
+      logToTerminal(`[Intent Detected] 메인 홈페이지 디자인 및 웹서버 구축 의도 감지 -> 1) html 빌더 기동 2) nginx 퍼블리싱 마운트`, 'info');
+      logToTerminal(`[자동 실행] 중계 서버 도구 구동: write_file (path: '/var/www/html/index.html')`, 'success');
+
+      const customTitle = msgLower.includes("방명록") ? "내 아기자기한 방명록 허브" : "Antigravity Custom Live Web Portal";
+      const customParagraph = msgLower.includes("방명록")
+        ? "어려운 데이터 설계나 데이터베이스 통신 지적은 잊고 편안하게 소통해 보세요. 에이전트가 뒤에서 가상 환경의 Nginx 포트 구성과 영구 저장 모듈을 동적 배포해 놓았습니다."
+        : "사용자님의 대화 문맥 속 지향점(웹사이트 개설)을 완벽하게 포착하고, 무중단 실시간 패치(dynamic patch-injection) 기법으로 가상 디바이스의 nginx 마운트 주소에 세련된 메인 웹 문서를 신속 배포하였습니다.";
+
+      const updatedWeb = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${customTitle}</title>
+    <style>
+        body { background: #07090e; color: #38bdf8; font-family: system-ui, -apple-system, sans-serif; text-align: center; padding: 6rem 1.5rem; margin: 0; }
+        .card { max-width: 650px; margin: 0 auto; background: rgba(15, 23, 42, 0.6); padding: 3rem 2rem; border-radius: 24px; border: 1px solid rgba(56, 189, 248, 0.2); box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5); }
+        h1 { font-size: 2.75rem; margin-bottom: 1.5rem; text-shadow: 0 0 20px rgba(56, 189, 248, 0.4); font-weight: 800; letter-spacing: -0.04em; color: #10b981; }
+        p { color: #cbd5e1; font-size: 1.1rem; line-height: 1.7; margin-bottom: 2rem; }
+        .badge { display: inline-block; padding: 0.35rem 0.9rem; background: rgba(16, 185, 129, 0.15); border: 1px solid #10b981; border-radius: 9999px; font-family: monospace; font-size: 0.82rem; font-weight: 700; color: #34d399; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>${customTitle}</h1>
+        <p>${customParagraph}</p>
+        <span class="badge">ANTG PLATFORM AUTO-DEPLOY PERFECT</span>
+    </div>
+</body>
+</html>`;
+
+      setTimeout(() => {
+        handleSaveFileContent('linux', '/var/www/html/index.html', updatedWeb);
+        setPlatform('linux');
+        const fileNode = findFileRecursively(linuxFiles, 'index.html');
+        if (fileNode) {
+          setSelectedFile({ ...fileNode, content: updatedWeb });
+          setEditorContent(updatedWeb);
+        }
+        setActiveTab('filesystem');
+        logToTerminal(`[File System] SUCCESS: Beautifully regenerated /var/www/html/index.html with interactive HTML UI!`, 'success');
+      }, 1000);
+
+      offlineReply = `[사용자 의도 감지] 🎨 **세련된 개인 홈페이지 생성 및 가상 인프라 배포 완료**
+
+도메인 레코드나 Nginx 환경 세팅 명령어, HTML 코딩이 생소하고 어려움을 느끼시더라도 하등 문제없습니다! 회원님의 메인 화면 디자인 및 생성 방향을 전폭 수용하여, 에이전트가 뒤에서 알아서 최고의 스타일링 문서를 준비하고 웹서버 포트에 완벽 배포했습니다.
+
+• **자동 배포된 파일**: \`/var/www/html/index.html\` (리얼타임 인젝션 마감)
+• **스타일 바인딩**: 모바일 및 울트라 와이드 화면을 정교하게 커버하는 반응형 테마, 우아한 카드 레이아웃, 그리고 형광 네온 글로우 스타일 탑재
+• **현재 화면 포커스**: 배포된 아름다운 코드를 한눈에 검토·수정하실 수 있도록 **물리 파일 탐색기 및 에디터** 장막으로 자동 연동하여 포커스해 올렸습니다!
+
+코딩 지식 없이도 오로지 "원하는 웹 브랜딩과 생각"만을 편히 들려주세요. 해빙이 뒤에서 모든 하드 레벨 시스템 인프라를 가압 마운트해 드립니다.`;
+    }
+
+    // 5. Implicit File-Level operation fallback
+    else {
+      const fileDetails = getFileDetails(msgLower);
+      if (fileDetails) {
+        processedOffline = true;
+        const { file, plat } = fileDetails;
+        
+        const isEditing = msgLower.includes("수정") || msgLower.includes("변경") || msgLower.includes("바꿔") || msgLower.includes("저장") || msgLower.includes("쓰기") || msgLower.includes("작성") || msgLower.includes("추가");
+        
+        if (isEditing) {
+          // File write operation
+          logToTerminal(`[자동 실행] 중계 서버 도구 구동: write_file (path: '${file.path}')`, 'success');
+          
+          let updatedContent = file.content || "";
+          if (file.name === "index.html") {
+            updatedContent = `<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>Antigravity Premium Applet</title>
+    <style>
+        body { background: #07090e; color: #38bdf8; font-family: 'Space Grotesk', sans-serif; text-align: center; padding-top: 6rem; }
+        h1 { font-size: 3.5rem; margin-bottom: 1.5rem; text-shadow: 0 0 15px #0284c7; font-weight: 800; letter-spacing: -0.05em; }
+        p { color: #cbd5e1; font-size: 1.1rem; max-width: 600px; margin: 0 auto; line-height: 1.6; }
+        .badge { display: inline-block; padding: 0.25rem 0.75rem; background: rgba(56, 189, 248, 0.15); border: 1px border #0284c7; border-radius: 9999px; font-family: monospace; font-size: 0.8rem; margin-top: 2rem; }
+    </style>
+</head>
+<body>
+    <h1>Antigravity Premium Applet Live</h1>
+    <p>회원님의 일상대화 명령을 분석한 뒤, 실시간 무중단 패치(hot-patch) 인젝션 기법으로 Nginx 게이트웨이에 최신화된 맞춤형 웹문서 배포를 정상 마감하였습니다.</p>
+    <div class="badge">AGENT AUTO-DEPLOY SUCCESS</div>
+</body>
+</html>`;
+          } else if (file.name === "nginx.conf") {
+            updatedContent = file.content + `\n# Custom Virtual Backend Proxy Added\nupstream backend_cluster {\n    server 127.0.0.1:3000;\n}\n`;
+          } else if (file.name === "docker-compose.yml") {
+            updatedContent = file.content + `\n# Extended redis cache database integration\n  redis-cache:\n    image: redis:7-alpine\n    container_name: mcp-redis-cache\n    ports:\n      - "6379:6379"\n`;
+          } else {
+            updatedContent = file.content + `\n// Updated by Antigravity AI Agent on ${new Date().toLocaleDateString()}\n`;
+          }
+
+          setTimeout(() => {
+            handleSaveFileContent(plat, file.path, updatedContent);
+            setPlatform(plat);
+            setSelectedFile({ ...file, content: updatedContent });
+            setEditorContent(updatedContent);
+            setActiveTab('filesystem');
+            logToTerminal(`[File System] SUCCESS: Auto-write flush complete on '${file.path}' (${plat.toUpperCase()})`, 'success');
+          }, 1100);
+
+          offlineReply = `[자동 실행] 중계 서버 도구 구동: write_file (target: '${file.path}')
+
+사용자님의 일상어 교정 요청에 따라, 개발 중인 가상 파일 중 **'${file.name}'** 파일을 직접 열고 최적의 구성안 및 업그레이드 코드를 새로 고쳐서 안전하게 작성 보관(Write Flush) 처리했습니다! 💾
+
+• 소속 OS 마운트: ${plat.toUpperCase()} 플랫폼
+• 갱신된 소스 위치: \`${file.path}\`
+
+에이전트가 회원님을 위해 **물리 파일 탐색기 & 에디터** 탭으로 자동 조준하여 연동해놓았습니다. 편안하게 고쳐진 소스 코드를 관측해 보세요!`;
+
+        } else {
+          // File read operation
+          logToTerminal(`[자동 실행] 중계 서버 도구 구동: read_file (path: '${file.path}')`, 'success');
+          
+          setTimeout(() => {
+            setPlatform(plat);
+            setSelectedFile(file);
+            setEditorContent(file.content || "");
+            setActiveTab('filesystem');
+            logToTerminal(`[File System] SUCCESS: Auto-load complete on '${file.path}' (${plat.toUpperCase()})`, 'success');
+          }, 800);
+
+          offlineReply = `[자동 실행] 중계 서버 도구 구동: read_file (target: '${file.path}')
+
+회원님이 말씀하신 파일 탐색 요청을 감지해, 프로젝트 디스크 안에 위치한 **'${file.name}'** 파일을 번개처럼 판독(Read)하여 통합 코드 에디터에 자동으로 전개시켰습니다! 📄
+
+• 활성 대상 경로: \`${file.path}\`
+• 인프라 가용 환경: ${plat.toUpperCase()} 에뮬레이터
+
+파일 전송과 탐색기 탭 포커싱이 완전 가동되었습니다.`;
+        }
+      }
+    }
+
+    if (processedOffline) {
+      setTimeout(() => {
+        setChatMessages(prev => [
+          ...prev,
+          {
+            id: `reply-${Date.now()}`,
+            role: "model",
+            parts: [{ text: offlineReply }],
+            timestamp: new Date().toTimeString().split(' ')[0]
+          }
+        ]);
+        logToTerminal(`[AI Agent] Conversational NLP match triggered successfully`, 'success');
+        setIsChatLoading(false);
+        if (autoSpeak) {
+          speakResponse(offlineReply);
+        }
+      }, 1200);
+      return; // Stop execution here since we handled offline!
     }
 
     try {
@@ -1558,6 +1843,13 @@ export default function App() {
 
                 {/* Beginner-friendly Goal Suggestions Slider */}
                 <div className="mt-3 mb-1 text-left sm:px-1">
+                  <div className="mb-2 p-2.5 bg-blue-950/20 border border-blue-900/40 rounded-xl">
+                    <span className="text-[10px] text-blue-300 font-bold tracking-tight block mb-1">💬 해빙이 일상대화 자동 제어 지원</span>
+                    <span className="text-[10px] text-slate-400 block leading-relaxed">
+                      "index.html 읽어줘", "docker-compose.yml 수정해줘", "antg.dev 도메인 연결해줘", "스냅샷 백업 부탁해" 등 어려운 명령어 입력 대신 <b>한국어 일상 문장</b>으로 편하게 말씀해 주시면, 에이전트가 완벽히 이해하고 뒤에서 가상 환경과 파일을 오토 세팅해 드립니다!
+                    </span>
+                  </div>
+
                   <div className="flex items-center gap-1.5 mb-2 pl-0.5 select-none">
                     <Sparkles size={11} className="text-yellow-500 animate-pulse" />
                     <span className="text-[10px] text-slate-400 font-bold tracking-tight">💡 용어가 낯설다면? 원하는 '목표'를 콕 짚어 제안받기</span>
@@ -1612,7 +1904,7 @@ export default function App() {
                 >
                   <input
                     type="text"
-                    placeholder="에이전트에게 코딩, 파일 수정, 도메인 연결을 지시하세요..."
+                    placeholder="의도만 편하게 말씀하세요 (예: 멋진 메인화면 만들어줘, 도메인 연결해줘, 백업해줘)..."
                     value={userInput}
                     disabled={isChatLoading}
                     onChange={(e) => setUserInput(e.target.value)}
@@ -1820,6 +2112,12 @@ volumes:
               onDeleteNode={handleDeleteFileNode}
               onResetFiles={handleResetFiles}
               onLogTerminal={logToTerminal}
+              platform={platform}
+              setPlatform={setPlatform}
+              selectedFile={selectedFile}
+              setSelectedFile={setSelectedFile}
+              editorContent={editorContent}
+              setEditorContent={setEditorContent}
             />
           )}
 

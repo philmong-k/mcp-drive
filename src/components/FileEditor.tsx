@@ -10,6 +10,12 @@ interface FileEditorProps {
   onDeleteNode: (platform: 'linux' | 'windows', targetPath: string) => void;
   onResetFiles: () => void;
   onLogTerminal: (text: string, type?: 'info' | 'success' | 'warn' | 'error') => void;
+  platform: 'linux' | 'windows';
+  setPlatform: (plat: 'linux' | 'windows') => void;
+  selectedFile: FileNode | null;
+  setSelectedFile: React.Dispatch<React.SetStateAction<FileNode | null>>;
+  editorContent: string;
+  setEditorContent: (content: string) => void;
 }
 
 export default function FileEditor({
@@ -20,10 +26,13 @@ export default function FileEditor({
   onDeleteNode,
   onResetFiles,
   onLogTerminal,
+  platform,
+  setPlatform,
+  selectedFile,
+  setSelectedFile,
+  editorContent,
+  setEditorContent,
 }: FileEditorProps) {
-  const [platform, setPlatform] = useState<'linux' | 'windows'>('linux');
-  const [selectedFile, setSelectedFile] = useState<FileNode | null>(null);
-  const [editorContent, setEditorContent] = useState<string>("");
   const [expandedPaths, setExpandedPaths] = useState<Record<string, boolean>>({
     "/var": true, "/var/www": true, "/var/www/html": true,
     "C:": true, "C:\\Users": true, "C:\\Users\\Administrator": true, "C:\\Users\\Administrator\\Projects": true
